@@ -990,7 +990,12 @@ function renderSettings() {
 }
 function bindSettings() {
   $$('[data-set]').forEach(i => i.onchange = async () => {
-    try { S.settings = await call('settings_set', i.dataset.set, i.checked); } catch { i.checked = !i.checked; }
+    try { S.settings = await call('settings_set', i.dataset.set, i.checked); } catch { i.checked = !i.checked; return; }
+    if (i.dataset.set === 'physical_input' && i.checked) {
+      toast('เปิดโหมดอุปกรณ์จริงแล้ว เปิดจอสดใหม่ แล้วใช้เมาส์คลิกและคีย์บอร์ดพิมพ์ในหน้าต่างจอสด', 'ok', { ms: 9000 });
+    } else if (i.dataset.set === 'physical_input' && S.mirrors.has(S.current)) {
+      toast('ปิดโหมดอุปกรณ์จริงแล้ว จะมีผลเมื่อเปิดจอสดครั้งถัดไป', 'info');
+    }
   });
   $('#quality-seg').addEventListener('click', async e => {
     const b = e.target.closest('[data-q]'); if (!b) return;

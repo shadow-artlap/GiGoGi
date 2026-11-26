@@ -33,6 +33,7 @@ DEFAULTS = {
     "on_top": False,
     "show_touches": False,
     "record_mirror": False,
+    "physical_input": False,
     "auto_mirror": False,
     "close_mirror_on_exit": True,
     "check_updates": True,
@@ -681,6 +682,10 @@ class Api:
                 args.append(flag)
         if not s["audio"]:
             args.append("--no-audio")
+        if s["physical_input"]:
+            # โหมดอุปกรณ์จริง: ส่งเมาส์/คีย์บอร์ดผ่าน HID จริง (ผู้ใช้คลิกและพิมพ์ในหน้าต่างจอสดเอง)
+            # บางหน้า เช่น หน้าลงทะเบียน WhatsApp ไม่รับการแตะแบบปกติ แต่รับอินพุตจากอุปกรณ์จริง
+            args += ["--keyboard=uhid", "--mouse=uhid"]
         if s["record_mirror"]:
             rec = os.path.join(self._out_dir("Recordings"), f"mirror_{self._stamp()}.mp4")
             args += ["--record", rec]

@@ -50,7 +50,7 @@
       const ready = mode === 'ready' || multi;
       return {
         version: '2.0.0', repo: 'shadow-artlap/GiGoGi', tools: { adb: true, scrcpy: true },
-        settings: { quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search), skip_version: '', save_dir: 'C:\\Users\\User\\Documents\\GiGoGi' },
+        settings: { quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false, physical_input: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search), skip_version: '', save_dir: 'C:\\Users\\User\\Documents\\GiGoGi' },
         logs: [{ t: '14:30:02', msg: 'พบ SM S918B', level: 'ok' }, { t: '14:31:10', msg: 'บันทึกภาพหน้าจอแล้ว: screen_20261127_143110.png', level: 'ok' }],
         mirror: false, recording: { active: false, elapsed: 0 },
         devices: mode === 'none' ? [] : [{ ...dev, state: ready || multi ? 'device' : 'unauthorized', model: ready || multi ? dev.model : '' }].concat(multi ? others : []),
