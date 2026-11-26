@@ -14,7 +14,7 @@ const store = {
 const S = {
   inited: false, page: 'home', ready: false, dstate: null, devices: [], current: null,
   tools: { adb: true, scrcpy: true }, settings: {}, version: '', repo: '', logs: [],
-  mirror: false, rec: { active: false, started: 0 }, info: null, infoAt: 0, frame: null,
+  mirrors: new Set(), briefs: {}, rec: { active: false, started: 0 }, info: null, infoAt: 0, frame: null,
   rate: store.get('rate', 1500),
   files: { path: '/sdcard', items: [], view: [], sel: new Set(), filter: '', sort: 'name', asc: true, anchor: null, loaded: false },
   apps: { kind: 'user', list: [], filter: '', sel: null, loaded: false, token: 0 },
@@ -124,7 +124,7 @@ function promptBox({ title, body = '', value = '', ok = 'บันทึก', pl
 }
 
 /* ================================================================ navigation */
-const TITLES = { home: 'หน้าหลัก', screen: 'หน้าจอ', files: 'ไฟล์', apps: 'แอพ', tools: 'เครื่องมือ', settings: 'ตั้งค่า' };
+const TITLES = { home: 'หน้าหลัก', all: 'ทุกเครื่อง', screen: 'หน้าจอ', files: 'ไฟล์', apps: 'แอพ', tools: 'เครื่องมือ', settings: 'ตั้งค่า' };
 function go(page) {
   S.page = page;
   document.body.dataset.page = page;
@@ -155,8 +155,9 @@ function applyDevices(d) {
   const was = S.ready, prev = S.current;
   S.devices = d.devices || []; S.current = d.current; S.ready = !!d.ready; S.dstate = d.state;
   document.body.classList.toggle('ready', S.ready);
-  renderSwitch(); renderConnect(); renderWifiList();
+  renderSwitch(); renderConnect(); renderWifiList(); renderTiles();
   $('#mirror-btn').disabled = !S.ready;
+  setMirrors([...S.mirrors]);
   const fresh = S.ready && (!was || prev !== S.current);
   if (fresh) {
     S.info = null; S.frame = null;
@@ -176,7 +177,124 @@ function applyDevices(d) {
   }
   $('#stage').hidden = !S.ready;
   $('#connect').hidden = S.ready;
-  if (fresh || (was && !S.ready)) onPageShown();
+  if (fresh || (was && !S.ready) || S.page === 'all') onPageShown();
+}
+
+/* ================================================================ all devices */
+function tileState(d) {
+  if (d.state === 'device') return '';
+  if (d.state === 'unauthorized') return 'กด "อนุญาต" บนมือถือเครื่องนี้';
+  if (d.state === 'offline') return 'ขาดการเชื่อมต่อ ลองถอดแล้วเสียบใหม่';
+  return d.state;
+}
+function renderTiles() {
+  const grid = $('#device-grid');
+  const ready = S.devices.filter(d => d.state === 'device').length;
+  const waiting = S.devices.length - ready;
+  $('#all-count').innerHTML = S.devices.length
+    ? `<b>${ready}</b>เครื่องพร้อมใช้งาน${waiting ? `  รออนุญาตหรือขาดการเชื่อมต่อ ${waiting} เครื่อง` : ''}`
+    : '';
+  $$('#page-all .all-bar .btn').forEach(b => { b.disabled = !ready; });
+  const allOn = ready > 0 && S.devices.filter(d => d.state === 'device').every(d => S.mirrors.has(d.serial));
+  $('#mirror-all').innerHTML = `${icon(allOn ? 'stop' : 'play')}<span>${allOn ? 'ปิดจอสดทั้งหมด' : 'เปิดจอสดทุกเครื่อง'}</span>`;
+  $('#mirror-all').classList.toggle('live', allOn);
+  if (!S.devices.length) {
+    grid.innerHTML = `<div class="all-empty" style="grid-column:1/-1"><img src="logo.png" alt=""><h2>ยังไม่ได้เสียบมือถือ</h2>
+      <p>เสียบได้หลายเครื่องพร้อมกัน ทุกเครื่องจะขึ้นที่หน้านี้</p><button class="btn" data-menu="guide">ดูวิธีเชื่อมต่อ</button></div>`;
+    return;
+  }
+  grid.querySelector('.all-empty')?.remove();
+  const seen = new Set();
+  for (const d of S.devices) {
+    seen.add(d.serial);
+    let t = grid.querySelector(`.tile[data-serial="${CSS.escape(d.serial)}"]`);
+    if (!t) {
+      t = document.createElement('article');
+      t.className = 'tile'; t.dataset.serial = d.serial;
+      t.innerHTML = `<div class="phone mini" data-t="manage" title="จัดการเครื่องนี้"><div class="phone-screen"><img alt=""><span class="phone-empty"></span></div></div>
+        <div class="tile-body"><h3></h3><p class="tile-sub"></p>
+        <div class="tile-actions">
+          <button class="btn" data-t="mirror"></button>
+          <button class="icon-btn sm" data-t="shot" title="แคปหน้าจอเครื่องนี้">${icon('camera', 'sm')}</button>
+          <button class="icon-btn sm" data-t="manage" title="จัดการเครื่องนี้">${icon('chev-right', 'sm')}</button>
+        </div></div>`;
+      grid.append(t);
+    }
+    const ok = d.state === 'device', b = S.briefs[d.serial] || {};
+    t.classList.toggle('current', d.serial === S.current);
+    t.classList.toggle('waiting', !ok);
+    t.querySelector('.phone').classList.toggle('lit', ok);
+    if (!ok) t.querySelector('img').removeAttribute('src');
+    t.querySelector('.phone-empty').textContent = ok ? 'กำลังโหลดภาพหน้าจอ' : tileState(d);
+    t.querySelector('h3').textContent = b.name || d.model || 'มือถือ Android';
+    const bat = b.battery != null ? `แบต ${b.battery}%${b.charging ? ' กำลังชาร์จ' : ''}` : '';
+    t.querySelector('.tile-sub').innerHTML = `<span class="status-dot ${ok ? 'ok' : d.state === 'unauthorized' ? 'wait' : 'bad'}"></span>`
+      + `<span>${d.transport === 'wifi' ? 'Wi‑Fi' : 'USB'}</span>${bat ? `<span>${esc(bat)}</span>` : ''}`
+      + (d.serial === S.current ? '<span class="here">กำลังจัดการ</span>' : '');
+    const on = S.mirrors.has(d.serial);
+    const mb = t.querySelector('[data-t="mirror"]');
+    mb.disabled = !ok;
+    mb.classList.toggle('live', on);
+    mb.innerHTML = `${icon(on ? 'stop' : 'play', 'sm')}<span>${on ? 'ปิดจอสด' : 'เปิดจอสด'}</span>`;
+    t.querySelector('[data-t="shot"]').disabled = !ok;
+  }
+  $$('#device-grid .tile').forEach(t => { if (!seen.has(t.dataset.serial)) t.remove(); });
+}
+async function grabAll() {
+  const ready = S.devices.filter(d => d.state === 'device');
+  for (const d of ready) {
+    if (S.page !== 'all') return;
+    const b = S.briefs[d.serial];
+    if (!b || Date.now() - b.at > 30000) {
+      const nb = await quiet('device_brief', d.serial);
+      if (nb) { S.briefs[d.serial] = { ...nb, at: Date.now() }; renderTiles(); }
+    }
+    const f = await quiet('screen_frame', 720, d.serial);
+    const t = $(`#device-grid .tile[data-serial="${CSS.escape(d.serial)}"]`);
+    if (f && t) { t.querySelector('img').src = f.img; t.querySelector('.phone').style.setProperty('--ar', `${f.w} / ${f.h}`); }
+  }
+}
+function bindAll() {
+  $('#device-grid').addEventListener('click', async e => {
+    const b = e.target.closest('[data-t]'); if (!b) return;
+    const serial = b.closest('.tile').dataset.serial;
+    const d = S.devices.find(x => x.serial === serial);
+    const name = S.briefs[serial]?.name || d?.model || 'มือถือ';
+    try {
+      if (b.dataset.t === 'mirror') {
+        if (S.mirrors.has(serial)) await call('mirror_stop', serial);
+        else await call('mirror_start', serial, null);
+      } else if (b.dataset.t === 'shot') {
+        const p = await call('screenshot', serial);
+        toast(`แคปหน้าจอ ${name} แล้ว`, 'ok', { action: { label: 'เปิดดู', fn: () => quiet('open_path', p) } });
+      } else if (b.dataset.t === 'manage') {
+        if (d?.state !== 'device') { toast(tileState(d), 'warn'); return; }
+        if (serial !== S.current) applyDevices(await call('select_device', serial));
+        go('home');
+      }
+    } catch { /* แจ้งแล้ว */ }
+  });
+  $$('[data-all]').forEach(b => b.onclick = async () => {
+    try {
+      const n = await call('broadcast_key', b.dataset.all);
+      toast(`ส่งคำสั่งไป ${n} เครื่องแล้ว`, 'ok');
+      loop.restart(500);
+    } catch { /* แจ้งแล้ว */ }
+  });
+  $('#shot-all').onclick = async () => {
+    try {
+      const r = await call('screenshot_all');
+      toast(`แคปหน้าจอ ${r.count} เครื่องแล้ว`, 'ok', { action: { label: 'เปิดโฟลเดอร์', fn: () => quiet('reveal_path', r.last) } });
+    } catch { /* แจ้งแล้ว */ }
+  };
+  $('#mirror-all').onclick = async () => {
+    const readyDevs = S.devices.filter(d => d.state === 'device');
+    const allOn = readyDevs.length && readyDevs.every(d => S.mirrors.has(d.serial));
+    try {
+      if (allOn) await call('mirror_stop_all');
+      else { const n = await call('mirror_start_all'); if (n) toast(`เปิดจอสด ${n} เครื่อง เรียงหน้าต่างให้แล้ว`, 'ok'); }
+    } catch { /* แจ้งแล้ว */ }
+  };
 }
 function renderSwitch() {
   const d = S.devices.find(x => x.serial === S.current);
@@ -295,7 +413,10 @@ const loop = {
     const run = async () => {
       if (t !== this.token) return;
       let next = null;
-      if (S.ready && document.visibilityState === 'visible') {
+      if (S.page === 'all' && document.visibilityState === 'visible' && S.devices.some(d => d.state === 'device')) {
+        await grabAll();
+        next = 3000;
+      } else if (S.ready && document.visibilityState === 'visible') {
         if (S.page === 'home') {
           await grab('#home-shot', '#home-phone');
           next = 5000;
@@ -425,18 +546,22 @@ async function sendText(text, clear = true) {
 }
 
 /* ================================================================ mirror / capture */
-function setMirror(on) {
-  S.mirror = on;
+/* จอสดเปิดได้หลายเครื่องพร้อมกัน ปุ่มบนแถบด้านบนสะท้อนสถานะของเครื่องที่กำลังจัดการ */
+function setMirrors(list) {
+  S.mirrors = new Set(list || []);
+  const on = S.mirrors.has(S.current);
   const label = on ? 'ปิดจอสด' : 'เปิดจอสด', ic = on ? 'stop' : 'play';
   $$('#mirror-btn, [data-act="mirror"]').forEach(b => {
     b.classList.toggle('live', on);
     b.innerHTML = `${icon(ic)}<span>${label}</span>`;
   });
+  if (S.inited) renderTiles();
 }
 async function toggleMirror(forceOn) {
+  const on = S.mirrors.has(S.current);
   try {
-    if (S.mirror && forceOn !== true) { await call('mirror_stop'); setMirror(false); }
-    else if (!S.mirror) { await call('mirror_start'); setMirror(true); }
+    if (on && forceOn !== true) await call('mirror_stop');
+    else if (!on) await call('mirror_start');
   } catch { /* แจ้งแล้ว */ }
 }
 async function doScreenshot() {
@@ -870,7 +995,7 @@ function bindSettings() {
   $('#quality-seg').addEventListener('click', async e => {
     const b = e.target.closest('[data-q]'); if (!b) return;
     try { S.settings = await call('settings_set', 'quality', b.dataset.q); renderSettings(); } catch { /* แจ้งแล้ว */ }
-    if (S.mirror) toast('คุณภาพใหม่จะใช้ตอนเปิดจอสดครั้งถัดไป', 'info');
+    if (S.mirrors.size) toast('คุณภาพใหม่จะใช้ตอนเปิดจอสดครั้งถัดไป', 'info');
   });
   $('#save-dir-open').onclick = () => call('open_save_dir', '').catch(() => {});
   $('#save-dir-change').onclick = async () => { try { S.settings = await call('pick_save_dir'); renderSettings(); } catch { /* แจ้งแล้ว */ } };
@@ -998,7 +1123,7 @@ window.GG = {
     if (!S.inited) { pending.push([ev, data]); return; }
     if (ev === 'devices') applyDevices(data);
     else if (ev === 'log') { S.logs.push(data); if (S.logs.length > 300) S.logs.shift(); renderLog(); }
-    else if (ev === 'mirror') { setMirror(data.running); if (data.error) toast(data.error, 'error'); }
+    else if (ev === 'mirror') { setMirrors(data.mirrors); if (data.error) toast(data.error, 'error'); }
     else if (ev === 'record') {
       setRec(false);
       if (data.error) toast(data.error, 'error');
@@ -1063,7 +1188,7 @@ function bindShell() {
   };
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeMenus();
-    if (e.ctrlKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); go(Object.keys(TITLES)[+e.key - 1]); }
+    if (e.ctrlKey && /^[1-7]$/.test(e.key)) { e.preventDefault(); go(Object.keys(TITLES)[+e.key - 1]); }
   });
   document.addEventListener('visibilitychange', () => loop.restart());
 }
@@ -1071,11 +1196,11 @@ function bindShell() {
 async function init(apiObj) {
   if (S.inited) return;
   api = apiObj;
-  bindShell(); bindViewer(); bindFiles(); bindApps(); bindTools(); bindSettings(); bindDrop();
+  bindShell(); bindViewer(); bindFiles(); bindApps(); bindTools(); bindSettings(); bindDrop(); bindAll();
   const st = await api.get_state();
   S.tools = st.tools; S.settings = st.settings; S.version = st.version; S.repo = st.repo; S.logs = st.logs || [];
   renderSettings(); renderLog(); renderPlaces(); renderAppDetail(null);
-  setMirror(st.mirror);
+  setMirrors(st.mirrors);
   setRec(st.recording.active, Date.now() - st.recording.elapsed * 1000);
   setRate(S.rate);
   S.inited = true;

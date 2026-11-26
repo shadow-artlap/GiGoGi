@@ -14,7 +14,7 @@ import threading
 import time
 
 from version import __version__, GITHUB_REPO
-from .core import (APP_DIR, IS_WIN, NO_WINDOW, Adb, AdbError, find_tool, friendly_error,
+from .core import (APP_DIR, IS_WIN, NO_WINDOW, RES_DIR, Adb, AdbError, find_tool, friendly_error,
                    parse_devices, parse_kv, parse_ls, parse_wm_size, shq, version_tuple)
 
 APP_TITLE = "GiGoGi"
@@ -126,8 +126,8 @@ class Api:
         self._logs = collections.deque(maxlen=300)
         self._closing = False
         self._watching = False
-        self._scrcpy = None
-        self._scrcpy_stopping = False
+        self._mirrors = {}            # serial -> Popen ของ scrcpy (เปิดได้หลายเครื่องพร้อมกัน)
+        self._mirror_stopping = set()
         self._rec = None
         self._rec_started = 0.0
         self._rec_lock = threading.Lock()
@@ -158,15 +158,21 @@ class Api:
         except OSError:
             pass
 
-    def _need(self):
+    def _need(self, serial=None):
+        """คืน Adb ของเครื่องที่เลือกอยู่ หรือของ serial ที่ระบุ (ใช้กับหน้ารวมทุกเครื่อง)"""
         if not self._adb:
             raise AdbError("ไม่พบ adb — ติดตั้งโปรแกรมใหม่ด้วยตัวติดตั้ง หรือรัน winget install Google.PlatformTools")
-        d = self._devices.get(self._adb.serial)
+        s = serial or self._adb.serial
+        d = self._devices.get(s)
         if not d:
-            raise AdbError("ยังไม่ได้เสียบมือถือ")
+            raise AdbError("ยังไม่ได้เสียบมือถือ" if not serial else "มือถือเครื่องนี้หลุดการเชื่อมต่อแล้ว")
         if d["state"] != "device":
             raise AdbError(friendly_error(d["state"]))
-        return self._adb
+        if s == self._adb.serial:
+            return self._adb
+        other = Adb(self._adb_path)
+        other.serial = s
+        return other
 
     def _out_dir(self, sub):
         p = os.path.join(self._settings["save_dir"], sub)
@@ -212,9 +218,8 @@ class Api:
                 self._adb.shell("pkill -INT screenrecord", timeout=5)
             except AdbError:
                 pass
-        if self._settings["close_mirror_on_exit"] and self._scrcpy_running():
-            self._scrcpy_stopping = True
-            self._scrcpy.terminate()
+        if self._settings["close_mirror_on_exit"]:
+            self.mirror_stop_all()
 
     def _watch(self):
         try:
@@ -251,14 +256,16 @@ class Api:
             if cur not in new:
                 cur = ready[0] if ready else next(iter(new), None)
             self._adb.serial = cur
-            became_ready = bool(cur) and new[cur]["state"] == "device" and (
-                cur != prev or old.get(cur, {}).get("state") != "device")
+            # เครื่องที่เพิ่งพร้อมใช้งาน (เสียบใหม่ หรือเพิ่งกดอนุญาต)
+            fresh = [s for s, d in new.items() if d["state"] == "device" and old.get(s, {}).get("state") != "device"]
         self._emit("devices", self._device_state())
-        if became_ready and self._settings["auto_mirror"] and not self._scrcpy_running():
-            try:
-                self.mirror_start()
-            except AdbError as e:
-                self._log(str(e), "error")
+        if self._settings["auto_mirror"]:
+            for s in fresh:
+                if not self._mirror_running(s):
+                    try:
+                        self.mirror_start(s, slot=len(self._running_mirrors()))
+                    except AdbError as e:
+                        self._log(str(e), "error")
 
     def _device_state(self):
         cur = self._adb.serial if self._adb else None
@@ -271,7 +278,7 @@ class Api:
         st = {"version": current_version(), "repo": GITHUB_REPO,
               "tools": {"adb": bool(self._adb_path), "scrcpy": bool(self._scrcpy_path)},
               "settings": self._settings, "logs": list(self._logs),
-              "mirror": self._scrcpy_running(), "recording": self._rec_status()}
+              "mirrors": self._running_mirrors(), "recording": self._rec_status()}
         st.update(self._device_state() if self._adb else {"devices": [], "current": None, "state": None, "ready": False})
         return st
 
@@ -460,8 +467,8 @@ class Api:
         }
 
     # ================================================================ screen
-    def screen_frame(self, max_side=1400):
-        a = self._need()
+    def screen_frame(self, max_side=1400, serial=None):
+        a = self._need(serial)
         code, data, err = a.run("exec-out", "screencap -p", binary=True, timeout=15)
         i = data.find(b"\x89PNG")
         if i < 0:
@@ -477,13 +484,27 @@ class Api:
         im.save(buf, "JPEG", quality=74)
         return {"img": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"), "w": w, "h": h}
 
-    def screenshot(self):
-        a = self._need()
+    def device_brief(self, serial):
+        """ข้อมูลย่อสำหรับหน้ารวมทุกเครื่อง: ชื่อเครื่อง แบต และการชาร์จ"""
+        a = self._need(serial)
+        out = a.sh_out("settings get global device_name; getprop ro.product.marketname; "
+                       "getprop ro.product.model; echo @@; dumpsys battery", timeout=15)
+        head, _, bat = out.partition("@@")
+        names = [x.strip() for x in head.strip().splitlines()] + ["", "", ""]
+        name = next((x for x in names[:3] if x and x != "null"), "")
+        b = parse_kv(bat)
+        level = b.get("level", "")
+        return {"serial": serial, "name": name, "battery": int(level) if level.isdigit() else None,
+                "charging": b.get("status") in ("2", "5")}
+
+    def screenshot(self, serial=None):
+        a = self._need(serial)
         code, data, err = a.run("exec-out", "screencap -p", binary=True, timeout=20)
         i = data.find(b"\x89PNG")
         if i < 0:
             raise AdbError("แคปหน้าจอไม่ได้ (แอพบางตัว เช่น แอพธนาคาร ไม่อนุญาตให้แคป)")
-        path = os.path.join(self._out_dir("Screenshots"), f"screen_{self._stamp()}.png")
+        tag = "" if not serial else "_" + re.sub(r"[^\w.-]", "_", self._devices.get(serial, {}).get("model") or serial)
+        path = os.path.join(self._out_dir("Screenshots"), f"screen_{self._stamp()}{tag}.png")
         with open(path, "wb") as f:
             f.write(data[i:])
         self._log(f"บันทึกภาพหน้าจอแล้ว: {os.path.basename(path)}", "ok")
@@ -547,11 +568,33 @@ class Api:
         ms = max(50, min(int(ms), 3000))
         self._need().shell(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {ms}", check=True)
 
-    def input_key(self, code):
+    def input_key(self, code, serial=None):
         code = str(code)
         if not KEY_RE.match(code):
             raise AdbError("ปุ่มไม่ถูกต้อง")
-        self._need().shell(f"input keyevent {code}", check=True)
+        self._need(serial).shell(f"input keyevent {code}", check=True)
+
+    def broadcast_key(self, code):
+        """ส่งปุ่มเดียวกันไปทุกเครื่องที่พร้อมใช้งาน คืนจำนวนเครื่องที่สำเร็จ"""
+        ok = 0
+        for s, d in list(self._devices.items()):
+            if d["state"] == "device":
+                try:
+                    self.input_key(code, s)
+                    ok += 1
+                except AdbError as e:
+                    self._log(f"{d['model'] or s}: {e}", "error")
+        return ok
+
+    def screenshot_all(self):
+        paths = []
+        for s, d in list(self._devices.items()):
+            if d["state"] == "device":
+                try:
+                    paths.append(self.screenshot(s))
+                except AdbError as e:
+                    self._log(f"{d['model'] or s}: {e}", "error")
+        return {"count": len(paths), "dir": self._out_dir("Screenshots"), "last": paths[-1] if paths else ""}
 
     def input_text(self, text):
         a = self._need()
@@ -559,7 +602,7 @@ class Api:
             return {"sent": False}
         if any(ord(c) > 126 or ord(c) < 32 for c in text):
             set_clipboard(text)
-            if self._scrcpy_running():
+            if self._mirror_running(a.serial):
                 time.sleep(0.4)  # ให้ scrcpy ส่งคลิปบอร์ดไปที่มือถือก่อน
                 a.shell("input keyevent 279", check=True)  # KEYCODE_PASTE
                 return {"sent": True, "via": "paste"}
@@ -590,21 +633,48 @@ class Api:
         self._need().shell(f"cmd statusbar {cmd.get(which, 'collapse')}", check=True)
 
     # ================================================================ mirror (scrcpy)
-    def _scrcpy_running(self):
-        return self._scrcpy is not None and self._scrcpy.poll() is None
+    def _mirror_running(self, serial=None):
+        p = self._mirrors.get(serial or (self._adb.serial if self._adb else None))
+        return p is not None and p.poll() is None
 
-    def mirror_start(self):
-        a = self._need()
+    def _running_mirrors(self):
+        return [s for s, p in list(self._mirrors.items()) if p.poll() is None]
+
+    @staticmethod
+    def _work_area():
+        """พื้นที่จอคอมที่ไม่รวมแถบงาน (left, top, right, bottom)"""
+        if IS_WIN:
+            try:
+                import ctypes
+                from ctypes import wintypes
+                r = wintypes.RECT()
+                if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+                    return r.left, r.top, r.right, r.bottom
+            except Exception:  # noqa: BLE001
+                pass
+        return 0, 0, 1920, 1040
+
+    def mirror_start(self, serial=None, slot=None):
+        """เปิดหน้าต่างจอสดของเครื่องหนึ่ง slot = ลำดับหน้าต่าง ใช้เรียงหน้าต่างไม่ให้ซ้อนกัน"""
+        a = self._need(serial)
         if not self._scrcpy_path:
             raise AdbError("ไม่พบ scrcpy — ติดตั้งโปรแกรมใหม่ด้วยตัวติดตั้ง")
-        if self._scrcpy_running():
+        if self._mirror_running(a.serial):
             return True
         s = self._settings
         size, rate = QUALITY[s["quality"]]
         name = self._devices.get(a.serial, {}).get("model") or "Android"
-        args = [self._scrcpy_path, "-s", a.serial, "--window-title", f"{name} · GiGoGi", "--video-bit-rate", rate]
+        args = [self._scrcpy_path, "-s", a.serial, "--window-title", f"{name} - GiGoGi", "--video-bit-rate", rate]
         if size:
             args += ["--max-size", size]
+        if slot is not None:
+            left, top, right, bottom = self._work_area()
+            h = max(480, int((bottom - top) * 0.86))
+            w = int(h * 0.47) + 16
+            per_row = max(1, (right - left - 24) // (w + 14))
+            x = left + 24 + (slot % per_row) * (w + 14)
+            y = top + 40 + (slot // per_row) * 36
+            args += ["--window-x", str(x), "--window-y", str(y), "--window-height", str(h)]
         for key, flag in (("stay_awake", "--stay-awake"), ("screen_off", "--turn-screen-off"),
                           ("on_top", "--always-on-top"), ("show_touches", "--show-touches")):
             if s[key]:
@@ -616,31 +686,55 @@ class Api:
             args += ["--record", rec]
         env = os.environ.copy()
         env["ADB"] = self._adb_path  # ใช้ adb ตัวเดียวกัน ไม่ให้ server สองเวอร์ชันชนกัน
+        icons = os.path.join(RES_DIR, "ui", "scrcpy-icons")
+        if os.path.isdir(icons):
+            env["SCRCPY_ICON_DIR"] = icons  # ไอคอนหน้าต่างจอสดเป็นโลโก้ GiGoGi แทนหุ่นยนต์ Android
         try:
             proc = subprocess.Popen(args, env=env, cwd=os.path.dirname(self._scrcpy_path),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
         except OSError as e:
             raise AdbError(f"เปิดจอสดไม่ได้: {e}")
-        self._scrcpy, self._scrcpy_stopping = proc, False
-        self._log("เปิดจอสดแล้ว", "ok")
-        self._emit("mirror", {"running": True})
-        threading.Thread(target=self._mirror_reader, args=(proc,), daemon=True).start()
+        self._mirrors[a.serial] = proc
+        self._mirror_stopping.discard(a.serial)
+        self._log(f"เปิดจอสด {name} แล้ว", "ok")
+        self._emit("mirror", {"serial": a.serial, "running": True, "mirrors": self._running_mirrors()})
+        threading.Thread(target=self._mirror_reader, args=(proc, a.serial, name), daemon=True).start()
         return True
 
-    def _mirror_reader(self, proc):
+    def mirror_start_all(self):
+        ready = [s for s, d in self._devices.items() if d["state"] == "device"]
+        if not ready:
+            raise AdbError("ยังไม่มีมือถือที่พร้อมใช้งาน")
+        n = 0
+        for i, s in enumerate(ready):
+            if not self._mirror_running(s):
+                self.mirror_start(s, slot=i)
+                n += 1
+                time.sleep(0.3)
+        return n
+
+    def mirror_stop_all(self):
+        for s in self._running_mirrors():
+            self.mirror_stop(s)
+
+    def _mirror_reader(self, proc, serial, name):
         tail = []
         for raw in proc.stdout:
             line = raw.decode("utf-8", "replace").strip()
             if line:
                 tail = (tail + [line])[-20:]
         code = proc.wait()
+        if self._mirrors.get(serial) is proc:
+            self._mirrors.pop(serial, None)
         if self._closing:
             return
         text = "\n".join(tail)
-        if code == 0 or self._scrcpy_stopping:
-            self._log("ปิดจอสดแล้ว")
-            self._emit("mirror", {"running": False})
+        base = {"serial": serial, "running": False, "mirrors": self._running_mirrors()}
+        if code == 0 or serial in self._mirror_stopping:
+            self._mirror_stopping.discard(serial)
+            self._log(f"ปิดจอสด {name} แล้ว")
+            self._emit("mirror", base)
             return
         if "INJECT_EVENTS" in text:
             msg = friendly_error("INJECT_EVENTS")
@@ -651,13 +745,16 @@ class Api:
         else:
             err = [l for l in tail if l.startswith("ERROR")]
             msg = "จอสดหยุดทำงาน: " + (err[-1][6:].strip() if err else f"รหัส {code}")
+        msg = f"{name}: {msg}"
         self._log(msg, "error")
-        self._emit("mirror", {"running": False, "error": msg})
+        self._emit("mirror", dict(base, error=msg))
 
-    def mirror_stop(self):
-        if self._scrcpy_running():
-            self._scrcpy_stopping = True
-            self._scrcpy.terminate()
+    def mirror_stop(self, serial=None):
+        s = serial or (self._adb.serial if self._adb else None)
+        p = self._mirrors.get(s)
+        if p is not None and p.poll() is None:
+            self._mirror_stopping.add(s)
+            p.terminate()
         return False
 
     # ================================================================ files

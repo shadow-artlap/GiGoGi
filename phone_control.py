@@ -53,14 +53,52 @@ def selftest():
     assert "Xiaomi" in friendly_error("java.lang.SecurityException: Injecting to another application requires INJECT_EVENTS permission")
     from gigogi.api import _to_bytes
     assert _to_bytes("1024") == 1024 * 1024 and _to_bytes("2G") == 2 * 1024 ** 3
-    assert os.path.isfile(os.path.join(RES_DIR, "ui", "index.html")), "ui/index.html missing"
+    for f in ("index.html", "icon.ico", "scrcpy-icons/scrcpy.png", "scrcpy-icons/disconnected.png"):
+        assert os.path.isfile(os.path.join(RES_DIR, "ui", f)), f"ui/{f} missing"
     _print("selftest: OK")
+
+
+def _app_id():
+    """ให้ Windows นับเป็นโปรแกรม GiGoGi บนแถบงาน (ไม่ใช่ python.exe) ต้องเรียกก่อนสร้างหน้าต่าง"""
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GiGoGi.PhoneControl")
+    except (AttributeError, OSError):
+        pass
+
+
+def _set_window_icon(window):
+    """ใส่โลโก้ GiGoGi ให้หน้าต่าง (มุมซ้ายบน, Alt+Tab และแถบงาน)"""
+    try:
+        import ctypes
+        ico = os.path.join(RES_DIR, "ui", "icon.ico")
+        if not os.path.isfile(ico):
+            return
+        u32 = ctypes.windll.user32
+        hwnd = None
+        try:
+            hwnd = int(window.native.Handle.ToInt64())
+        except Exception:  # noqa: BLE001
+            u32.FindWindowW.restype = ctypes.c_void_p
+            hwnd = u32.FindWindowW(None, window.title)
+        if not hwnd:
+            return
+        u32.LoadImageW.restype = ctypes.c_void_p
+        u32.LoadImageW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint)
+        u32.SendMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)
+        for which, size in ((1, 256), (0, 32)):  # ICON_BIG, ICON_SMALL
+            h = u32.LoadImageW(None, ico, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+            if h:
+                u32.SendMessageW(ctypes.c_void_p(hwnd), 0x0080, ctypes.c_void_p(which), ctypes.c_void_p(h))  # WM_SETICON
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def main():
     if "--selftest" in sys.argv:
         selftest()
         return
+    _app_id()
     import webview
     from gigogi.api import Api
 
@@ -71,6 +109,7 @@ def main():
     api._window = window
     window.events.loaded += api._on_loaded
     window.events.closing += api._on_closing
+    window.events.shown += lambda: _set_window_icon(window)
 
     if "--smoke" in sys.argv:
         def smoke():

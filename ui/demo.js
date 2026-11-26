@@ -7,11 +7,20 @@
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const dev = { serial: 'R5CW31ABCDE', state: 'device', model: 'SM S918B', transport: 'usb' };
 
-  function frame() {
+  const multi = mode === 'multi';
+  const others = [
+    { serial: '9A231FFAZ00K', state: 'device', model: 'Pixel 8', transport: 'usb' },
+    { serial: '192.168.1.52:5555', state: 'device', model: 'Redmi Note 13', transport: 'wifi' },
+    { serial: 'HT7A1B2C3D', state: 'unauthorized', model: '', transport: 'usb' },
+  ];
+  const briefs = { R5CW31ABCDE: ['Galaxy S23 Ultra', 82, true], '9A231FFAZ00K': ['Pixel 8', 64, false], '192.168.1.52:5555': ['Redmi Note 13', 23, false] };
+  const mirrors = new Set();
+
+  function frame(stops = ['#16324a', '#1d1b3a', '#3a1830']) {
     const c = document.createElement('canvas'); c.width = 540; c.height = 1170;
     const g = c.getContext('2d');
     const bg = g.createLinearGradient(0, 0, 540, 1170);
-    bg.addColorStop(0, '#16324a'); bg.addColorStop(.55, '#1d1b3a'); bg.addColorStop(1, '#3a1830');
+    bg.addColorStop(0, stops[0]); bg.addColorStop(.55, stops[1]); bg.addColorStop(1, stops[2]);
     g.fillStyle = bg; g.fillRect(0, 0, 540, 1170);
     g.fillStyle = '#fff'; g.font = '600 26px Segoe UI'; g.fillText('14:32', 34, 52);
     g.font = '300 120px Segoe UI'; g.fillText('14:32', 120, 330);
@@ -25,6 +34,7 @@
     return c.toDataURL('image/jpeg', .8);
   }
   const shot = frame();
+  const shots = { '9A231FFAZ00K': frame(['#13322a', '#0f2a1f', '#2b3a12']), '192.168.1.52:5555': frame(['#3a2a12', '#2a1a10', '#40141c']) };
   const files = {
     '/sdcard': [['Alarms', 'dir'], ['Android', 'dir'], ['DCIM', 'dir'], ['Documents', 'dir'], ['Download', 'dir'], ['Movies', 'dir'], ['Music', 'dir'], ['Pictures', 'dir'],
       ['ใบเสร็จ ค่าไฟ ตุลาคม.pdf', 'file', 248113], ['notes.txt', 'file', 1820]],
@@ -37,13 +47,14 @@
 
   const demo = {
     async get_state() {
-      const ready = mode === 'ready';
+      const ready = mode === 'ready' || multi;
       return {
         version: '2.0.0', repo: 'shadow-artlap/GiGoGi', tools: { adb: true, scrcpy: true },
         settings: { quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search), skip_version: '', save_dir: 'C:\\Users\\User\\Documents\\GiGoGi' },
         logs: [{ t: '14:30:02', msg: 'พบ SM S918B', level: 'ok' }, { t: '14:31:10', msg: 'บันทึกภาพหน้าจอแล้ว: screen_20261127_143110.png', level: 'ok' }],
         mirror: false, recording: { active: false, elapsed: 0 },
-        devices: mode === 'none' ? [] : [{ ...dev, state: ready ? 'device' : 'unauthorized', model: ready ? dev.model : '' }],
+        devices: mode === 'none' ? [] : [{ ...dev, state: ready || multi ? 'device' : 'unauthorized', model: ready || multi ? dev.model : '' }].concat(multi ? others : []),
+        mirrors: [],
         current: mode === 'none' ? null : dev.serial, state: mode === 'none' ? null : ready ? 'device' : 'unauthorized', ready,
       };
     },
@@ -53,7 +64,13 @@
         power_source: 'USB', temp: 31.4, storage_total: 256e9 * 0.93, storage_used: 141e9, mem_total: 11.2e9, mem_avail: 4.6e9,
         screen: '1080 × 2340', density: '450', ip: '192.168.1.44', uptime: 302400 };
     },
-    async screen_frame() { await wait(120); return { img: shot, w: 1080, h: 2340 }; },
+    async screen_frame(max, serial) { await wait(120); return { img: shots[serial] || shot, w: 1080, h: 2340 }; },
+    async device_brief(serial) { await wait(100); const b = briefs[serial] || ['Android', 50, false]; return { serial, name: b[0], battery: b[1], charging: b[2] }; },
+    async mirror_start(serial) { mirrors.add(serial || dev.serial); GG.onEvent('mirror', { mirrors: [...mirrors] }); return true; },
+    async mirror_stop(serial) { mirrors.delete(serial || dev.serial); GG.onEvent('mirror', { mirrors: [...mirrors] }); return false; },
+    async mirror_start_all() { [dev.serial, ...others.filter(o => o.state === 'device').map(o => o.serial)].forEach(s => mirrors.add(s)); GG.onEvent('mirror', { mirrors: [...mirrors] }); return 3; },
+    async mirror_stop_all() { mirrors.clear(); GG.onEvent('mirror', { mirrors: [] }); },
+    async broadcast_key() { await wait(200); return 3; },
     async files_list(p) {
       await wait(150);
       const list = files[p] || [];
