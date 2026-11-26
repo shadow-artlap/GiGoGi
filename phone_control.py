@@ -102,9 +102,14 @@ def main():
     import webview
     from gigogi.api import Api
 
+    storage = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "GiGoGi", "webview")
+    _clear_web_cache_on_update(storage)
+
     api = Api()
+    # ?v=<version> ทำให้ทุกเวอร์ชันเป็น URL ใหม่ WebView จึงโหลดหน้าสดไม่ใช้แคชเก่า
+    url = os.path.join(RES_DIR, "ui", "index.html") + "?v=" + __version__
     window = webview.create_window(
-        "GiGoGi", url=os.path.join(RES_DIR, "ui", "index.html"), js_api=api,
+        "GiGoGi", url=url, js_api=api,
         width=1320, height=860, min_size=(1080, 700), background_color="#000000", text_select=True)
     api._window = window
     window.events.loaded += api._on_loaded
@@ -118,6 +123,8 @@ def main():
                 res = window.evaluate_js(
                     "JSON.stringify({rail: !!document.querySelector('.rail'), inited: typeof S !== 'undefined' && S.inited,"
                     " title: document.querySelector('#page-title').textContent,"
+                    " physical: !!document.querySelector('[data-set=\"physical_input\"]'),"
+                    " ver: (typeof S !== 'undefined' && S.version) || '',"
                     " font: document.fonts.check('16px \"IBM Plex Sans Thai\"')})")
                 _print("smoke:", res)
                 with open(os.path.join(os.environ.get("TEMP", "."), "gigogi_smoke.txt"), "w", encoding="utf-8") as f:
@@ -126,8 +133,31 @@ def main():
                 window.destroy()
         threading.Thread(target=smoke, daemon=True).start()
 
-    webview.start(debug="--debug" in sys.argv, private_mode=False,
-                  storage_path=os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "GiGoGi", "webview"))
+    webview.start(debug="--debug" in sys.argv, private_mode=False, storage_path=storage)
+
+
+def _clear_web_cache_on_update(storage):
+    """ล้างแคชหน้าเว็บของ WebView เมื่ออัปเดตเป็นเวอร์ชันใหม่ ไม่งั้นหน้าตาเก่าจะยังค้างอยู่
+    ลบเฉพาะแคช (Cache / Code Cache) ไม่แตะ localStorage หรือการตั้งค่าผู้ใช้"""
+    import shutil
+    marker = os.path.join(os.path.dirname(storage), "ui-version.txt")
+    try:
+        last = open(marker, encoding="utf-8").read().strip()
+    except OSError:
+        last = ""
+    if last == __version__:
+        return
+    base = os.path.join(storage, "EBWebView", "Default")
+    for sub in ("Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache"):
+        p = os.path.join(base, sub)
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(__version__)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
