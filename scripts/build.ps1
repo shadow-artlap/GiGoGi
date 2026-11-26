@@ -37,15 +37,29 @@ python -m PyInstaller --noconfirm --clean --windowed --name GiGoGiPhoneControl `
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 # 3) bundle scrcpy (includes adb)
+function Get-File($url, $out) {
+    # GitHub ขัดข้องชั่วคราวได้ ลองซ้ำสูงสุด 4 ครั้ง
+    for ($i = 1; $i -le 4; $i++) {
+        try {
+            Invoke-WebRequest $url -OutFile "$out.part" -TimeoutSec 180
+            Move-Item -Force "$out.part" $out
+            return
+        } catch {
+            Write-Host "   download failed (try $i): $($_.Exception.Message)"
+            if ($i -eq 4) { throw }
+            Start-Sleep -Seconds (10 * $i)
+        }
+    }
+}
 $zipName = "scrcpy-win64-v$ScrcpyVersion.zip"
 $zip = Join-Path $cache $zipName
 if (-not (Test-Path $zip)) {
     Write-Host "== Downloading $zipName"
-    Invoke-WebRequest "https://github.com/Genymobile/scrcpy/releases/download/v$ScrcpyVersion/$zipName" -OutFile $zip
+    Get-File "https://github.com/Genymobile/scrcpy/releases/download/v$ScrcpyVersion/$zipName" $zip
 }
 $lic = Join-Path $cache "LICENSE-scrcpy-$ScrcpyVersion.txt"
 if (-not (Test-Path $lic)) {
-    Invoke-WebRequest "https://raw.githubusercontent.com/Genymobile/scrcpy/v$ScrcpyVersion/LICENSE" -OutFile $lic
+    Get-File "https://raw.githubusercontent.com/Genymobile/scrcpy/v$ScrcpyVersion/LICENSE" $lic
 }
 $tmp = Join-Path $cache "scrcpy-x"
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
