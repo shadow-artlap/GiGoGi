@@ -35,6 +35,7 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#AppExe}
+SetupIconFile=..\assets\icon.ico
 UninstallDisplayName={#AppName}
 CloseApplications=yes
 VersionInfoVersion={#AppVersion}

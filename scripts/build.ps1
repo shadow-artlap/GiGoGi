@@ -22,13 +22,16 @@ $cache = Join-Path $build "cache"
 New-Item -ItemType Directory -Force $build, $dist, $cache | Out-Null
 
 # 1) tests
+python -m pip install --quiet -r requirements.txt
 python -X utf8 phone_control.py --selftest
 if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
 
 # 2) exe
-python -m pip install --quiet --upgrade pyinstaller
-if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
+python -m pip install --quiet --upgrade pyinstaller -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 python -m PyInstaller --noconfirm --clean --windowed --name GiGoGiPhoneControl `
+    --icon (Join-Path $root "assets\icon.ico") `
+    --add-data "$(Join-Path $root 'ui');ui" `
     --distpath (Join-Path $build "dist") --workpath (Join-Path $build "work") --specpath $build `
     phone_control.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
