@@ -36,9 +36,24 @@ DEFAULTS = {
     "auto_mirror": False,
     "close_mirror_on_exit": True,
     "check_updates": True,
+    "skip_version": "",
     "save_dir": DEFAULT_SAVE_DIR,
 }
 QUALITY = {"saver": ("1024", "4M"), "balanced": ("1600", "8M"), "sharp": (None, "16M")}
+UPDATE_URL_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
+
+
+def current_version():
+    # GIGOGI_FAKE_VERSION ใช้ทดสอบระบบอัปเดตเท่านั้น
+    return os.environ.get("GIGOGI_FAKE_VERSION") or __version__
+
+
+def can_self_update():
+    """อัปเดตเองได้เฉพาะเมื่อรันจาก .exe ที่ติดตั้งด้วยตัวติดตั้ง (มีตัวถอนการติดตั้งอยู่ข้าง ๆ)"""
+    from .core import FROZEN
+    if os.environ.get("GIGOGI_UPDATE_DRYRUN"):
+        return True
+    return IS_WIN and FROZEN and os.path.isfile(os.path.join(APP_DIR, "unins000.exe"))
 
 
 def _load_settings():
@@ -117,6 +132,8 @@ class Api:
         self._rec_started = 0.0
         self._rec_lock = threading.Lock()
         self._task_seq = 0
+        self._update = None
+        self._update_asset = None
 
     # ================================================================ plumbing
     def _emit(self, event, data=None):
@@ -251,7 +268,7 @@ class Api:
 
     # ================================================================ state / settings
     def get_state(self):
-        st = {"version": __version__, "repo": GITHUB_REPO,
+        st = {"version": current_version(), "repo": GITHUB_REPO,
               "tools": {"adb": bool(self._adb_path), "scrcpy": bool(self._scrcpy_path)},
               "settings": self._settings, "logs": list(self._logs),
               "mirror": self._scrcpy_running(), "recording": self._rec_status()}
@@ -268,7 +285,7 @@ class Api:
         return state
 
     def settings_set(self, key, value):
-        if key not in DEFAULTS or key == "save_dir" or type(value) is not type(DEFAULTS[key]):
+        if key not in DEFAULTS or key in ("save_dir", "skip_version") or type(value) is not type(DEFAULTS[key]):
             raise AdbError("ค่าตั้งค่าไม่ถูกต้อง")
         if key == "quality" and value not in QUALITY:
             raise AdbError("ค่าคุณภาพไม่ถูกต้อง")
@@ -302,7 +319,9 @@ class Api:
     def get_logs(self):
         return list(self._logs)
 
+    # ================================================================ update (GitHub Releases)
     def check_update(self):
+        """ดูเวอร์ชันล่าสุดบน GitHub คืนข้อมูลที่หน้า UI ใช้แสดงหน้าต่างอัปเดต"""
         import urllib.request
         req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
                                      headers={"Accept": "application/vnd.github+json", "User-Agent": "GiGoGi"})
@@ -312,8 +331,88 @@ class Api:
         except Exception as e:  # noqa: BLE001
             raise AdbError(f"ตรวจอัปเดตไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต ({e})")
         latest = data.get("tag_name", "").lstrip("v")
-        return {"current": __version__, "latest": latest, "url": data.get("html_url", ""),
-                "newer": bool(latest) and version_tuple(latest) > version_tuple(__version__)}
+        setup = next((a for a in data.get("assets", [])
+                      if re.match(r"^GiGoGiPhoneControl-Setup-[\d.]+\.exe$", a.get("name", ""))
+                      and a.get("browser_download_url", "").startswith(UPDATE_URL_PREFIX)), None)
+        cur = current_version()
+        self._update = {
+            "current": cur, "latest": latest, "url": data.get("html_url", ""),
+            "notes": (data.get("body") or "")[:4000], "published": (data.get("published_at") or "")[:10],
+            "newer": bool(latest) and version_tuple(latest) > version_tuple(cur),
+            "size": setup.get("size") if setup else None,
+            "can_auto": bool(setup) and can_self_update(),
+            "skipped": self._settings["skip_version"] == latest,
+        }
+        self._update_asset = setup
+        return self._update
+
+    def update_skip(self, version):
+        self._settings["skip_version"] = str(version or "")
+        self._save_settings()
+
+    def update_install(self):
+        """ดาวน์โหลดตัวติดตั้งเวอร์ชันใหม่ ตรวจไฟล์ แล้วติดตั้งแบบเงียบ โปรแกรมจะปิดและเปิดใหม่เอง"""
+        info = getattr(self, "_update", None)
+        asset = getattr(self, "_update_asset", None)
+        if not info or not info["newer"] or not asset:
+            raise AdbError("ยังไม่มีเวอร์ชันใหม่ให้ติดตั้ง ลองตรวจหาอัปเดตอีกครั้ง")
+        if not info["can_auto"]:
+            raise AdbError("โปรแกรมนี้ไม่ได้ติดตั้งด้วยตัวติดตั้ง ให้ดาวน์โหลดจากหน้า GitHub แทน")
+        import urllib.request
+        folder = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "GiGoGi-update")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, asset["name"])
+        part = path + ".part"
+        total = int(asset.get("size") or 0)
+        req = urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": "GiGoGi"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r, open(part, "wb") as f:
+                if not r.geturl().startswith(("https://github.com/", "https://objects.githubusercontent.com/",
+                                              "https://release-assets.githubusercontent.com/")):
+                    raise AdbError("ที่อยู่ดาวน์โหลดไม่ใช่ GitHub")
+                done, last = 0, 0.0
+                while True:
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if time.time() - last > 0.25:
+                        last = time.time()
+                        self._emit("update", {"phase": "download", "done": done, "total": total})
+        except AdbError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise AdbError(f"ดาวน์โหลดไม่สำเร็จ ตรวจการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่ ({e})")
+        with open(part, "rb") as f:
+            head = f.read(2)
+        if (total and os.path.getsize(part) != total) or head != b"MZ":
+            os.remove(part)
+            raise AdbError("ไฟล์ที่ดาวน์โหลดไม่สมบูรณ์ ลองอีกครั้ง")
+        os.replace(part, path)
+        self._emit("update", {"phase": "install", "done": total, "total": total})
+        self._log(f"ดาวน์โหลดเวอร์ชัน {info['latest']} แล้ว กำลังติดตั้ง", "ok")
+        if os.environ.get("GIGOGI_UPDATE_DRYRUN"):
+            return {"path": path, "dryrun": True}
+        # ปิดจอสดและบริการ adb ของโปรแกรม เพื่อให้ไฟล์ถูกแทนที่ได้
+        self._settings["close_mirror_on_exit"] = True
+        self._on_closing()
+        try:
+            if self._adb:
+                self._adb.run("kill-server", use_serial=False, timeout=10)
+        except AdbError:
+            pass
+        subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RELAUNCH"],
+                         creationflags=0x00000008 | 0x00000200, close_fds=True)  # DETACHED | NEW_PROCESS_GROUP
+
+        def close():
+            time.sleep(0.8)
+            try:
+                self._window.destroy()
+            except Exception:  # noqa: BLE001
+                os._exit(0)
+        threading.Thread(target=close, daemon=True).start()
+        return {"path": path}
 
     def open_url_pc(self, url):
         if not re.match(r"^https://", url or ""):

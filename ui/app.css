@@ -436,6 +436,34 @@ label.set-row { cursor: pointer; }
 .about-text { flex: 1; }
 .about-text h2 { margin: 0; }
 
+/* ------------------------------------------------ update */
+.rail-btn.has-update::after {
+  content: ""; position: absolute; top: 8px; right: 20px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--leaf); box-shadow: 0 0 0 3px var(--void);
+}
+.update-row {
+  display: flex; align-items: center; gap: 16px; padding: 16px 18px; border-radius: var(--r-m);
+  border: 1px solid #2f5b2a; background: linear-gradient(90deg, rgba(34, 224, 58, .08), transparent 70%);
+}
+.update-row > div { flex: 1; }
+.update-row b { display: block; font-weight: 500; }
+.update-row small { color: var(--ash); font-size: var(--t-s); }
+.modal.update { width: min(560px, calc(100vw - 32px)); }
+.update-head { display: flex; gap: 18px; align-items: center; margin-bottom: 18px; }
+.update-head img { width: 64px; height: 64px; flex: none; }
+.update-head h3 { margin: 0 0 2px; }
+.update-head p { margin: 0; }
+.notes-title { font: 500 var(--t-s)/1 var(--ui); color: var(--ash); margin: 0 0 8px; }
+.modal ul.notes { max-height: 220px; margin: 0 0 18px; padding: 0 0 0 18px; color: var(--bone); }
+.modal ul.notes li { padding: 3px 0; }
+.modal ul.notes li::marker { color: var(--leaf); }
+.update-progress { margin: 4px 0 14px; }
+.update-progress .bar { height: 6px; }
+.update-progress .bar i { background: var(--grad); transition: width .25s; }
+.update-progress .up-text { margin: 10px 0 0; font-size: var(--t-s); font-variant-numeric: tabular-nums; }
+.update-progress.error .up-text { color: #ff9b85; }
+.modal-actions .spacer { flex: 1; }
+
 /* ------------------------------------------------ overlays */
 .drop-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .78); display: grid; place-items: center; pointer-events: none; }
 .drop-card {

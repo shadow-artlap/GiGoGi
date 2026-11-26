@@ -875,13 +875,87 @@ function bindSettings() {
   $('#save-dir-open').onclick = () => call('open_save_dir', '').catch(() => {});
   $('#save-dir-change').onclick = async () => { try { S.settings = await call('pick_save_dir'); renderSettings(); } catch { /* แจ้งแล้ว */ } };
   $('#check-update').onclick = () => checkUpdate(false);
+  $('#update-open').onclick = showUpdate;
   $('#open-github').onclick = () => quiet('open_url_pc', `https://github.com/${S.repo}`);
 }
+/* ---------- update */
+let updateShown = false;
 async function checkUpdate(silent) {
+  const btn = $('#check-update');
+  if (!silent) { btn.disabled = true; }
   const r = silent ? await quiet('check_update') : await call('check_update').catch(() => null);
+  btn.disabled = false;
   if (!r) return;
-  if (r.newer) toast(`มีเวอร์ชันใหม่ ${r.latest} (ตอนนี้ ${r.current})`, 'ok', { sticky: true, action: { label: 'ดาวน์โหลด', fn: () => quiet('open_url_pc', r.url) } });
-  else if (!silent) toast(`ใช้เวอร์ชันล่าสุดอยู่แล้ว (${r.current})`, 'ok');
+  S.update = r;
+  renderUpdateBadges();
+  if (r.newer) {
+    if (!silent || (!r.skipped && !updateShown)) { updateShown = true; showUpdate(); }
+  } else if (!silent) toast(`ใช้เวอร์ชันล่าสุดอยู่แล้ว (${r.current})`, 'ok');
+}
+function renderUpdateBadges() {
+  const u = S.update, on = !!(u && u.newer);
+  $('.rail-btn[data-page="settings"]').classList.toggle('has-update', on);
+  $('#update-row').hidden = !on;
+  if (on) {
+    $('#update-title').textContent = `เวอร์ชัน ${u.latest} พร้อมให้อัปเดต`;
+    $('#update-sub').textContent = u.can_auto ? 'ติดตั้งได้ในคลิกเดียว โปรแกรมจะเปิดใหม่เอง' : 'ดาวน์โหลดตัวติดตั้งจากหน้า GitHub';
+  }
+}
+function notesHTML(text) {
+  const lines = (text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(0, 14);
+  if (!lines.length) return '';
+  const items = lines.map(l => l.replace(/^[-*•]\s*/, '').replace(/\*\*/g, ''));
+  return `<ul class="notes">${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>`;
+}
+function showUpdate() {
+  const u = S.update; if (!u || !u.newer) return;
+  const m = modal(`<div class="update-head"><img src="logo.png" alt=""><div>
+      <h3>GiGoGi ${esc(u.latest)} พร้อมให้อัปเดต</h3>
+      <p>ตอนนี้ใช้เวอร์ชัน ${esc(u.current)}${u.size ? `  ขนาด ${fmtBytes(u.size)}` : ''}</p></div></div>
+    ${u.notes ? `<h4 class="notes-title">มีอะไรใหม่</h4>${notesHTML(u.notes)}` : ''}
+    <div class="update-progress" hidden><div class="bar"><i></i></div><p class="up-text"></p></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-u="skip">ข้ามเวอร์ชันนี้</button>
+      <span class="spacer"></span>
+      <button class="btn ghost" data-u="later">ภายหลัง</button>
+      ${u.can_auto ? '<button class="btn primary" data-u="install">อัปเดตเลย</button>' : '<button class="btn primary" data-u="page">ดาวน์โหลดจาก GitHub</button>'}
+    </div>`, true);
+  m.classList.add('update');
+  let busy = false;
+  const close = () => { if (!busy) { document.removeEventListener('keydown', onKey, true); closeModal(); } };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  $('#modal')._close = close;
+  m.querySelector('[data-u="later"]').onclick = close;
+  m.querySelector('[data-u="skip"]').onclick = () => { quiet('update_skip', u.latest); u.skipped = true; close(); toast(`จะไม่เตือนเวอร์ชัน ${u.latest} อีก ตรวจเองได้ในหน้าตั้งค่า`, 'info'); };
+  const page = m.querySelector('[data-u="page"]');
+  if (page) page.onclick = () => { quiet('open_url_pc', u.url); close(); };
+  const inst = m.querySelector('[data-u="install"]');
+  if (inst) inst.onclick = async () => {
+    busy = true;
+    m.querySelectorAll('[data-u]').forEach(b => { b.disabled = true; });
+    m.querySelector('.update-progress').hidden = false;
+    setUpdateProgress({ phase: 'download', done: 0, total: u.size || 0 });
+    try {
+      const r = await api.update_install();
+      if (r && r.dryrun) { busy = false; close(); toast('ทดสอบดาวน์โหลดสำเร็จ (ไม่ได้ติดตั้งจริง)', 'ok'); }
+    } catch (e) {
+      busy = false;
+      m.querySelectorAll('[data-u]').forEach(b => { b.disabled = false; });
+      m.querySelector('.up-text').textContent = errText(e);
+      m.querySelector('.update-progress').classList.add('error');
+    }
+  };
+  (inst || page).focus();
+}
+function setUpdateProgress(p) {
+  const box = $('#modal .update-progress'); if (!box) return;
+  box.classList.remove('error');
+  const pct = p.total ? p.done / p.total : 0;
+  box.querySelector('.bar i').style.width = (p.phase === 'install' ? 100 : pct * 100) + '%';
+  box.querySelector('.up-text').textContent = p.phase === 'install'
+    ? 'กำลังติดตั้ง โปรแกรมจะปิดแล้วเปิดขึ้นมาใหม่เองในไม่กี่วินาที'
+    : `กำลังดาวน์โหลด ${fmtBytes(p.done)}${p.total ? ` จาก ${fmtBytes(p.total)}` : ''}`;
 }
 
 /* ================================================================ drag & drop */
@@ -939,6 +1013,7 @@ window.GG = {
         toast(data.label, 'info', { id, sticky: true, progress: data.total > 1 ? data.done / data.total : -1 });
       }
     } else if (ev === 'dropped') onDropped(data);
+    else if (ev === 'update') setUpdateProgress(data);
   },
 };
 
@@ -1008,7 +1083,10 @@ async function init(apiObj) {
   go('home');
   pending.splice(0).forEach(([ev, data]) => window.GG.onEvent(ev, data));
   if (!st.tools.scrcpy) toast('ไม่พบ scrcpy ปุ่มจอสดจะใช้ไม่ได้ ติดตั้งโปรแกรมใหม่ด้วยตัวติดตั้ง', 'warn', { sticky: true });
-  if (st.settings.check_updates) setTimeout(() => checkUpdate(true), 2500);
+  if (st.settings.check_updates) {
+    setTimeout(() => checkUpdate(true), 2500);
+    setInterval(() => { if (S.settings.check_updates) checkUpdate(true); }, 6 * 3600 * 1000);
+  }
 }
 
 window.addEventListener('pywebviewready', () => init(window.pywebview.api));

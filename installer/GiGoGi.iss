@@ -59,11 +59,23 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; อัปเดตจากในโปรแกรม (ติดตั้งแบบเงียบด้วย /RELAUNCH): เปิดโปรแกรมกลับมาให้เอง
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: IsRelaunch
 
 [UninstallRun]
 Filename: "{app}\tools\scrcpy\adb.exe"; Parameters: "kill-server"; Flags: runhidden skipifdoesntexist; RunOnceId: "KillAdb"
 
 [Code]
+function IsRelaunch: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
+      Result := True;
+end;
+
 // A running adb server from the bundled tools locks adb.exe; stop it before upgrading.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var

@@ -40,7 +40,7 @@
       const ready = mode === 'ready';
       return {
         version: '2.0.0', repo: 'shadow-artlap/GiGoGi', tools: { adb: true, scrcpy: true },
-        settings: { quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: false, save_dir: 'C:\\Users\\User\\Documents\\GiGoGi' },
+        settings: { quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search), skip_version: '', save_dir: 'C:\\Users\\User\\Documents\\GiGoGi' },
         logs: [{ t: '14:30:02', msg: 'พบ SM S918B', level: 'ok' }, { t: '14:31:10', msg: 'บันทึกภาพหน้าจอแล้ว: screen_20261127_143110.png', level: 'ok' }],
         mirror: false, recording: { active: false, elapsed: 0 },
         devices: mode === 'none' ? [] : [{ ...dev, state: ready ? 'device' : 'unauthorized', model: ready ? dev.model : '' }],
@@ -64,7 +64,16 @@
       await wait(200);
       return { pkg, version: '14.18.0', code: '141800', installed: '2025-03-14 10:22:01', updated: '2026-11-20 08:01:44', installer: 'com.android.vending', system: false, disabled: false, size: 182000000, splits: 4 };
     },
-    async check_update() { return { current: '2.0.0', latest: '2.0.0', newer: false, url: '' }; },
+    async check_update() {
+      const newer = /update/.test(location.search);
+      return { current: '2.0.0', latest: newer ? '2.1.0' : '2.0.0', newer, url: '', size: 24117248, can_auto: true, skipped: false,
+        notes: '- แจ้งเตือนและติดตั้งอัปเดตได้ในโปรแกรม\n- ดาวน์โหลดพร้อมแถบความคืบหน้า แล้วเปิดโปรแกรมใหม่เอง\n- ข้ามเวอร์ชันที่ไม่ต้องการได้' };
+    },
+    async update_install() {
+      for (let d = 0; d <= 24117248; d += 2400000) { GG.onEvent('update', { phase: 'download', done: d, total: 24117248 }); await wait(250); }
+      GG.onEvent('update', { phase: 'install', done: 1, total: 1 }); await wait(1500);
+      return { dryrun: true };
+    },
   };
   const api = new Proxy(demo, { get: (t, k) => t[k] || (async () => { await wait(200); if (k === 'screenshot') return 'C:\\demo.png'; return true; }) });
   window.pywebview = { api };
