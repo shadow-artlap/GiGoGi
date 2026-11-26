@@ -547,8 +547,15 @@ async function sendText(text, clear = true) {
 
 /* ================================================================ mirror / capture */
 /* จอสดเปิดได้หลายเครื่องพร้อมกัน ปุ่มบนแถบด้านบนสะท้อนสถานะของเครื่องที่กำลังจัดการ */
+let physicalHintShown = false;
 function setMirrors(list) {
+  const prev = S.mirrors;
   S.mirrors = new Set(list || []);
+  // เพิ่งเปิดจอสดเครื่องใหม่ในโหมดอุปกรณ์จริง: เตือนวิธีปล่อยเมาส์ (ครั้งเดียวต่อการเปิดโปรแกรม)
+  if (S.inited && S.settings.physical_input && !physicalHintShown && [...S.mirrors].some(s => !prev.has(s))) {
+    physicalHintShown = true;
+    toast('โหมดอุปกรณ์จริง: เมาส์ถูกจับไว้ควบคุมมือถือ กด Alt หรือปุ่ม Windows เพื่อปล่อยเมาส์กลับมาที่คอม', 'ok', { ms: 11000 });
+  }
   const on = S.mirrors.has(S.current);
   const label = on ? 'ปิดจอสด' : 'เปิดจอสด', ic = on ? 'stop' : 'play';
   $$('#mirror-btn, [data-act="mirror"]').forEach(b => {
