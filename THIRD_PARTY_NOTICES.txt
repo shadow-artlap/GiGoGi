@@ -1,0 +1,22 @@
+GiGoGi Phone Control - Third-party software
+==========================================
+
+This installer includes the following third-party software, unmodified:
+
+1. scrcpy (https://github.com/Genymobile/scrcpy)
+   Copyright (C) 2018 Genymobile
+   Copyright (C) 2018-2026 Romain Vimont
+   Licensed under the Apache License, Version 2.0.
+   The full license text is installed at: tools\scrcpy\LICENSE-scrcpy.txt
+   and is available at http://www.apache.org/licenses/LICENSE-2.0
+
+2. Android Debug Bridge (adb) and its libraries, as distributed inside the
+   official scrcpy Windows release package. Part of the Android Open Source
+   Project (https://source.android.com), Apache License, Version 2.0.
+
+3. Python runtime and Tcl/Tk (bundled by PyInstaller)
+   Python Software Foundation License - https://docs.python.org/3/license.html
+   Tcl/Tk license - https://www.tcl.tk/software/tcltk/license.html
+
+GiGoGi Phone Control is not affiliated with Genymobile, Google or the
+Android Open Source Project.
