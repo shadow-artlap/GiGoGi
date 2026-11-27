@@ -33,7 +33,7 @@ DEFAULTS = {
     "on_top": False,
     "show_touches": False,
     "record_mirror": False,
-    "physical_input": False,
+    "input_mode": "normal",       # normal | physical | remote (ดู INPUT_MODES)
     "auto_mirror": False,
     "close_mirror_on_exit": True,
     "check_updates": True,
@@ -47,6 +47,14 @@ DEFAULTS = {
 NOT_SETTABLE = ("save_dir", "skip_version", "device_names", "schedules")
 SCHEDULE_ACTIONS = {"wake": "ปลุกจอ", "sleep": "ปิดจอ", "mirror": "เปิดจอสด", "mirror_off": "ปิดจอสด"}
 QUALITY = {"saver": ("1024", "4M"), "balanced": ("1600", "8M"), "sharp": (None, "16M")}
+# ตัวเลือก scrcpy ของแต่ละวิธีส่งการควบคุม
+INPUT_MODES = {
+    "normal": [],                                     # เมาส์/คีย์บอร์ดแบบปกติ (ระบบ Android)
+    "physical": ["--keyboard=uhid", "--mouse=uhid"],  # เมาส์+คีย์บอร์ด HID จริง (scrcpy จับเมาส์ไว้)
+    # ใช้ผ่านโปรแกรมรีโมต (UltraViewer, TeamViewer, AnyDesk): โปรแกรมพวกนี้ส่งเมาส์เป็นตำแหน่งบนจอ
+    # ซึ่งใช้กับการจับเมาส์ของโหมด physical ไม่ได้ จึงคงเมาส์แบบปกติ แต่คีย์บอร์ดเป็น HID จริง
+    "remote": ["--keyboard=uhid"],
+}
 UPDATE_URL_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
 
 
@@ -92,10 +100,14 @@ def _load_settings():
         with open(CONF_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         s.update({k: v for k, v in data.items() if k in DEFAULTS and type(v) is type(DEFAULTS[k])})
-    except (OSError, ValueError):
+        if "input_mode" not in data and data.get("physical_input") is True:  # ค่าจากเวอร์ชัน 2.3–2.4
+            s["input_mode"] = "physical"
+    except (OSError, ValueError, AttributeError):
         pass
     if s["quality"] not in QUALITY:
         s["quality"] = "balanced"
+    if s["input_mode"] not in INPUT_MODES:
+        s["input_mode"] = "normal"
     s["device_names"] = {str(k)[:64]: str(v)[:40] for k, v in s["device_names"].items() if str(v).strip()}
     clean = []
     for item in s["schedules"]:
@@ -390,6 +402,8 @@ class Api:
             raise AdbError("ค่าตั้งค่าไม่ถูกต้อง")
         if key == "quality" and value not in QUALITY:
             raise AdbError("ค่าคุณภาพไม่ถูกต้อง")
+        if key == "input_mode" and value not in INPUT_MODES:
+            raise AdbError("วิธีส่งการควบคุมไม่ถูกต้อง")
         if key == "start_with_windows":
             self._set_autostart(value)
         self._settings[key] = value
@@ -876,10 +890,8 @@ class Api:
                 args.append(flag)
         if not s["audio"]:
             args.append("--no-audio")
-        if s["physical_input"]:
-            # โหมดอุปกรณ์จริง: ส่งเมาส์/คีย์บอร์ดผ่าน HID จริง (ผู้ใช้คลิกและพิมพ์ในหน้าต่างจอสดเอง)
-            # บางหน้า เช่น หน้าลงทะเบียน WhatsApp ไม่รับการแตะแบบปกติ แต่รับอินพุตจากอุปกรณ์จริง
-            args += ["--keyboard=uhid", "--mouse=uhid"]
+        # วิธีส่งการควบคุม: บางหน้า (เช่น หน้าลงทะเบียน WhatsApp) รับเฉพาะอินพุตจากอุปกรณ์ HID จริง
+        args += INPUT_MODES[s["input_mode"]]
         if s["record_mirror"]:
             rec = os.path.join(self._out_dir("Recordings"), f"mirror_{self._stamp()}.mp4")
             args += ["--record", rec]

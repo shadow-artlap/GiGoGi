@@ -519,14 +519,25 @@ async function sendText(text, clear = true) {
 
 /* ================================================================ mirror / capture */
 /* จอสดเปิดได้หลายเครื่องพร้อมกัน ปุ่มบนแถบด้านบนสะท้อนสถานะของเครื่องที่กำลังจัดการ */
-let physicalHintShown = false;
+/* คำอธิบายของแต่ละวิธีส่งการควบคุม: ใช้ทั้งในหน้าตั้งค่าและข้อความตอนเปิดจอสด */
+const INPUT_HINTS = {
+  normal: 'เมาส์และคีย์บอร์ดแบบปกติ ใช้ได้เกือบทุกหน้า และใช้ผ่านโปรแกรมรีโมตได้',
+  physical: 'สำหรับหน้าที่แตะไม่ได้ เช่น หน้าสมัคร WhatsApp เมาส์จะถูกจับไว้ในหน้าต่างจอสด กด Alt หรือปุ่ม Windows เพื่อปล่อยเมาส์กลับมาที่คอม ใช้ผ่านโปรแกรมรีโมตไม่ได้ Android 11 ขึ้นไป',
+  remote: 'ใช้เมื่อควบคุมคอมผ่าน UltraViewer, TeamViewer หรือ AnyDesk เมาส์ใช้ได้ปกติ ในหน้าที่แตะไม่ได้ให้ใช้คีย์บอร์ด: Tab ย้ายช่อง พิมพ์ข้อความ Enter เพื่อกด Android 11 ขึ้นไป',
+};
+const INPUT_TOASTS = {
+  physical: 'โหมดอุปกรณ์จริง: เมาส์ถูกจับไว้ควบคุมมือถือ กด Alt หรือปุ่ม Windows เพื่อปล่อยเมาส์กลับมาที่คอม',
+  remote: 'โหมดใช้ผ่านรีโมต: หน้าไหนคลิกไม่ได้ ให้กด Tab ย้ายไปช่องที่ต้องการ พิมพ์ แล้วกด Enter',
+};
+let inputHintShown = false;
 function setMirrors(list) {
   const prev = S.mirrors;
   S.mirrors = new Set(list || []);
-  // เพิ่งเปิดจอสดเครื่องใหม่ในโหมดอุปกรณ์จริง: เตือนวิธีปล่อยเมาส์ (ครั้งเดียวต่อการเปิดโปรแกรม)
-  if (S.inited && S.settings.physical_input && !physicalHintShown && [...S.mirrors].some(s => !prev.has(s))) {
-    physicalHintShown = true;
-    toast('โหมดอุปกรณ์จริง: เมาส์ถูกจับไว้ควบคุมมือถือ กด Alt หรือปุ่ม Windows เพื่อปล่อยเมาส์กลับมาที่คอม', 'ok', { ms: 11000 });
+  // เพิ่งเปิดจอสดเครื่องใหม่ในโหมดที่ใช้อุปกรณ์จริง: บอกวิธีใช้ (ครั้งเดียวต่อการเปิดโปรแกรม)
+  const hint = S.inited && INPUT_TOASTS[S.settings.input_mode];
+  if (hint && !inputHintShown && [...S.mirrors].some(s => !prev.has(s))) {
+    inputHintShown = true;
+    toast(hint, 'ok', { ms: 11000 });
   }
   const on = S.mirrors.has(S.current);
   const label = on ? 'ปิดจอสด' : 'เปิดจอสด', ic = on ? 'stop' : 'play';
@@ -1087,17 +1098,23 @@ function renderSettings() {
   const st = S.settings;
   $$('[data-set]').forEach(i => { i.checked = !!st[i.dataset.set]; });
   $$('#quality-seg button').forEach(b => b.classList.toggle('on', b.dataset.q === st.quality));
+  $$('#input-seg button').forEach(b => {
+    const on = b.dataset.im === st.input_mode;
+    b.classList.toggle('on', on); b.setAttribute('aria-checked', on); b.setAttribute('role', 'radio');
+  });
+  $('#input-hint').textContent = INPUT_HINTS[st.input_mode] || '';
   $('#save-dir').textContent = st.save_dir;
   $('#about-version').textContent = `เวอร์ชัน ${S.version}`;
 }
 function bindSettings() {
   $$('[data-set]').forEach(i => i.onchange = async () => {
-    try { S.settings = await call('settings_set', i.dataset.set, i.checked); } catch { i.checked = !i.checked; return; }
-    if (i.dataset.set === 'physical_input' && i.checked) {
-      toast('เปิดโหมดอุปกรณ์จริงแล้ว เปิดจอสดใหม่ แล้วใช้เมาส์คลิกและคีย์บอร์ดพิมพ์ในหน้าต่างจอสด', 'ok', { ms: 9000 });
-    } else if (i.dataset.set === 'physical_input' && S.mirrors.has(S.current)) {
-      toast('ปิดโหมดอุปกรณ์จริงแล้ว จะมีผลเมื่อเปิดจอสดครั้งถัดไป', 'info');
-    }
+    try { S.settings = await call('settings_set', i.dataset.set, i.checked); } catch { i.checked = !i.checked; }
+  });
+  $('#input-seg').addEventListener('click', async e => {
+    const b = e.target.closest('[data-im]'); if (!b || b.dataset.im === S.settings.input_mode) return;
+    try { S.settings = await call('settings_set', 'input_mode', b.dataset.im); renderSettings(); } catch { return; }
+    inputHintShown = false;
+    if (S.mirrors.size) toast('จะใช้วิธีใหม่ตอนเปิดจอสดครั้งถัดไป ปิดแล้วเปิดจอสดใหม่ได้เลย', 'info');
   });
   $('#quality-seg').addEventListener('click', async e => {
     const b = e.target.closest('[data-q]'); if (!b) return;

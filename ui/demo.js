@@ -17,7 +17,7 @@
   const mirrors = new Set();
   const settings = {
     quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false,
-    physical_input: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search),
+    input_mode: 'normal', auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search),
     start_with_windows: false, skip_version: '', save_dir: 'C:\\Users\\User\\Documents\\GiGoGi',
     device_names: { '9A231FFAZ00K': 'มือถือหน้าร้าน', OLD123456: 'เครื่องสำรอง' },
     schedules: [
@@ -83,6 +83,7 @@
     async mirror_start_all() { [dev.serial, ...others.filter(o => o.state === 'device').map(o => o.serial)].forEach(s => mirrors.add(s)); GG.onEvent('mirror', { mirrors: [...mirrors] }); return 3; },
     async mirror_stop_all() { mirrors.clear(); GG.onEvent('mirror', { mirrors: [] }); },
     async broadcast_key() { await wait(200); return 3; },
+    async settings_set(key, value) { settings[key] = value; return settings; },
     async device_rename(serial, name) {
       const all = [dev, ...others];
       const d = all.find(x => x.serial === serial); const hw = withNames([d])[0].hw;

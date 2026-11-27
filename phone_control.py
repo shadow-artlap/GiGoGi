@@ -128,7 +128,7 @@ def main():
                 res = window.evaluate_js(
                     "JSON.stringify({rail: !!document.querySelector('.rail'), inited: typeof S !== 'undefined' && S.inited,"
                     " title: document.querySelector('#page-title').textContent,"
-                    " physical: !!document.querySelector('[data-set=\"physical_input\"]'),"
+                    " inputModes: document.querySelectorAll('#input-seg button').length,"
                     " ver: (typeof S !== 'undefined' && S.version) || '',"
                     " page: (typeof S !== 'undefined' && S.page) || '',"
                     " schedulePage: !!document.querySelector('#page-schedule'),"
