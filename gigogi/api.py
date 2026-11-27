@@ -37,9 +37,15 @@ DEFAULTS = {
     "auto_mirror": False,
     "close_mirror_on_exit": True,
     "check_updates": True,
+    "start_with_windows": False,
     "skip_version": "",
     "save_dir": DEFAULT_SAVE_DIR,
+    "device_names": {},   # serial ของตัวเครื่อง (ro.serialno) -> ชื่อที่ผู้ใช้ตั้ง
+    "schedules": [],      # [{id, time "HH:MM", days [0=จันทร์..6=อาทิตย์], action, target "all"|serial, enabled}]
 }
+# ค่าที่แก้ผ่าน settings_set ไม่ได้ (มีฟังก์ชันเฉพาะของมันเอง)
+NOT_SETTABLE = ("save_dir", "skip_version", "device_names", "schedules")
+SCHEDULE_ACTIONS = {"wake": "ปลุกจอ", "sleep": "ปิดจอ", "mirror": "เปิดจอสด", "mirror_off": "ปิดจอสด"}
 QUALITY = {"saver": ("1024", "4M"), "balanced": ("1600", "8M"), "sharp": (None, "16M")}
 UPDATE_URL_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
 
@@ -57,8 +63,31 @@ def can_self_update():
     return IS_WIN and FROZEN and os.path.isfile(os.path.join(APP_DIR, "unins000.exe"))
 
 
+def _valid_schedule(item):
+    """ตรวจรายการตั้งเวลา คืนรายการที่สะอาดแล้ว หรือโยน AdbError"""
+    if not isinstance(item, dict):
+        raise AdbError("ข้อมูลตั้งเวลาไม่ถูกต้อง")
+    t = str(item.get("time", ""))
+    if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", t):
+        raise AdbError("เวลาต้องเป็นแบบ 07:30")
+    days = sorted({int(d) for d in item.get("days", []) if str(d).isdigit() and 0 <= int(d) <= 6})
+    if not days:
+        raise AdbError("เลือกอย่างน้อย 1 วัน")
+    action = item.get("action")
+    if action not in SCHEDULE_ACTIONS:
+        raise AdbError("เลือกสิ่งที่จะให้ทำ")
+    target = str(item.get("target") or "all")[:64]
+    sid = str(item.get("id") or "")
+    if not re.match(r"^[0-9a-f]{8}$", sid):
+        import secrets
+        sid = secrets.token_hex(4)
+    return {"id": sid, "time": t, "days": days, "action": action, "target": target,
+            "enabled": bool(item.get("enabled", True))}
+
+
 def _load_settings():
-    s = dict(DEFAULTS)
+    import copy
+    s = copy.deepcopy(DEFAULTS)
     try:
         with open(CONF_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -67,6 +96,14 @@ def _load_settings():
         pass
     if s["quality"] not in QUALITY:
         s["quality"] = "balanced"
+    s["device_names"] = {str(k)[:64]: str(v)[:40] for k, v in s["device_names"].items() if str(v).strip()}
+    clean = []
+    for item in s["schedules"]:
+        try:
+            clean.append(_valid_schedule(item))
+        except (AdbError, ValueError, TypeError):
+            pass
+    s["schedules"] = clean
     return s
 
 
@@ -135,6 +172,8 @@ class Api:
         self._task_seq = 0
         self._update = None
         self._update_asset = None
+        self._hw = {}                 # serial ของ adb -> serial ของตัวเครื่อง (Wi‑Fi ใช้ ip:port จึงต้องแปลง)
+        self._scheduling = False
 
     # ================================================================ plumbing
     def _emit(self, event, data=None):
@@ -205,6 +244,9 @@ class Api:
         if self._adb and not self._watching:
             self._watching = True
             threading.Thread(target=self._watch, daemon=True).start()
+        if self._adb and not self._scheduling:
+            self._scheduling = True
+            threading.Thread(target=self._schedule_loop, daemon=True).start()
 
     def _on_drop(self, e):
         files = (e.get("dataTransfer") or {}).get("files") or []
@@ -239,18 +281,47 @@ class Api:
                 last = devs
             time.sleep(1.2)
 
+    def _hw_serial(self, serial, d=None):
+        """serial ของตัวเครื่องจริง ใช้เป็นกุญแจของชื่อเครื่อง: USB ใช้ serial ของ adb ได้เลย
+        Wi‑Fi (ip:port) ต้องถาม ro.serialno จากเครื่อง จะได้ใช้ชื่อเดียวกันไม่ว่าเสียบแบบไหน"""
+        if serial in self._hw:
+            return self._hw[serial]
+        d = d or self._devices.get(serial, {})
+        hw = serial
+        if d.get("state") == "device" and (":" in serial or d.get("transport") == "wifi"):
+            try:
+                a = Adb(self._adb_path)
+                a.serial = serial
+                got = a.sh_out("getprop ro.serialno", timeout=8)
+                if re.match(r"^[\w.-]{3,64}$", got):
+                    hw = got
+            except AdbError:
+                return serial
+        if d.get("state") == "device":
+            self._hw[serial] = hw
+        return hw
+
+    def _alias(self, serial):
+        hw = self._hw.get(serial, serial)
+        return (self._settings["device_names"].get(hw)
+                or self._devices.get(serial, {}).get("model") or serial)
+
     def _apply_devices(self, old, new):
+        for s, d in new.items():  # หา serial ของตัวเครื่องก่อน เพื่อให้ log ใช้ชื่อที่ตั้งไว้
+            if d["state"] == "device" and s not in self._hw:
+                self._hw_serial(s, d)
         with self._lock:
             self._devices = new
             for s, d in new.items():
-                name = d["model"] or s
+                name = self._alias(s)
                 if s not in old:
                     self._log(f"พบ {name}", "ok" if d["state"] == "device" else "info")
                 elif old[s]["state"] != d["state"] and d["state"] == "device":
                     self._log(f"{name} พร้อมใช้งาน", "ok")
             for s in old:
                 if s not in new:
-                    self._log(f"ถอด {old[s]['model'] or s} แล้ว", "warn")
+                    self._log(f"ถอด {self._alias(s) if s in self._hw else (old[s]['model'] or s)} แล้ว", "warn")
+                    self._hw.pop(s, None)
             prev = self._adb.serial
             cur = prev
             ready = [s for s, d in new.items() if d["state"] == "device"]
@@ -271,8 +342,30 @@ class Api:
     def _device_state(self):
         cur = self._adb.serial if self._adb else None
         d = self._devices.get(cur) if cur else None
-        return {"devices": list(self._devices.values()), "current": cur,
+        names = self._settings["device_names"]
+        devs = []
+        for x in self._devices.values():
+            hw = self._hw.get(x["serial"], x["serial"])
+            devs.append(dict(x, hw=hw, alias=names.get(hw, "")))
+        return {"devices": devs, "current": cur,
                 "state": d["state"] if d else None, "ready": bool(d and d["state"] == "device")}
+
+    # ================================================================ device names
+    def device_rename(self, serial, name):
+        """ตั้งชื่อเครื่อง ผูกกับ serial ของตัวเครื่อง ถอดเสียบครั้งหน้าก็ยังจำได้ ชื่อว่าง = ลบชื่อ"""
+        name = re.sub(r"\s+", " ", str(name or "")).strip()[:40]
+        hw = self._hw_serial(serial) if serial in self._devices else str(serial)[:64]
+        names = dict(self._settings["device_names"])
+        if name:
+            names[hw] = name
+        else:
+            names.pop(hw, None)
+        self._settings["device_names"] = names
+        self._save_settings()
+        self._log(f"ตั้งชื่อเครื่อง {hw} เป็น \"{name}\"" if name else f"ลบชื่อของเครื่อง {hw}", "ok")
+        state = self._device_state()
+        self._emit("devices", state)
+        return dict(state, settings=self._settings)
 
     # ================================================================ state / settings
     def get_state(self):
@@ -293,13 +386,114 @@ class Api:
         return state
 
     def settings_set(self, key, value):
-        if key not in DEFAULTS or key in ("save_dir", "skip_version") or type(value) is not type(DEFAULTS[key]):
+        if key not in DEFAULTS or key in NOT_SETTABLE or type(value) is not type(DEFAULTS[key]):
             raise AdbError("ค่าตั้งค่าไม่ถูกต้อง")
         if key == "quality" and value not in QUALITY:
             raise AdbError("ค่าคุณภาพไม่ถูกต้อง")
+        if key == "start_with_windows":
+            self._set_autostart(value)
         self._settings[key] = value
         self._save_settings()
         return self._settings
+
+    @staticmethod
+    def _set_autostart(on):
+        """เปิด GiGoGi พร้อม Windows (ย่อไว้ที่แถบงาน) เพื่อให้ตั้งเวลาทำงานได้แม้ไม่ได้เปิดโปรแกรมเอง"""
+        from .core import FROZEN
+        if not IS_WIN:
+            raise AdbError("รองรับเฉพาะ Windows")
+        if on and not FROZEN:
+            raise AdbError("ใช้ได้เฉพาะโปรแกรมที่ติดตั้งด้วยตัวติดตั้ง")
+        import sys
+        import winreg
+        path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as k:
+            if on:
+                winreg.SetValueEx(k, "GiGoGi", 0, winreg.REG_SZ, f'"{sys.executable}" --minimized')
+            else:
+                try:
+                    winreg.DeleteValue(k, "GiGoGi")
+                except FileNotFoundError:
+                    pass
+
+    # ================================================================ schedules
+    def schedule_save(self, item):
+        clean = _valid_schedule(item)
+        items = [s for s in self._settings["schedules"] if s["id"] != clean["id"]]
+        old = next((s for s in self._settings["schedules"] if s["id"] == clean["id"]), None)
+        if old:
+            items.insert(self._settings["schedules"].index(old), clean)
+        else:
+            items.append(clean)
+        items.sort(key=lambda s: s["time"])
+        self._settings["schedules"] = items
+        self._save_settings()
+        return items
+
+    def schedule_delete(self, sid):
+        self._settings["schedules"] = [s for s in self._settings["schedules"] if s["id"] != sid]
+        self._save_settings()
+        return self._settings["schedules"]
+
+    def schedule_run(self, sid):
+        """สั่งทำรายการนี้ทันที (ใช้ทดลองว่าตั้งถูกไหม)"""
+        s = next((x for x in self._settings["schedules"] if x["id"] == sid), None)
+        if not s:
+            raise AdbError("ไม่พบรายการนี้แล้ว")
+        return self._run_schedule(s, manual=True)
+
+    def _schedule_targets(self, target):
+        out = []
+        for serial, d in list(self._devices.items()):
+            if d["state"] != "device":
+                continue
+            if target == "all" or self._hw_serial(serial) == target or serial == target:
+                out.append(serial)
+        return out
+
+    def _run_schedule(self, s, manual=False):
+        label = SCHEDULE_ACTIONS[s["action"]]
+        targets = self._schedule_targets(s["target"])
+        if not targets:
+            msg = f"ตั้งเวลา {s['time']} ({label}): ไม่มีมือถือที่เชื่อมต่ออยู่"
+            self._log(msg, "warn")
+            self._emit("schedule", {"id": s["id"], "ok": 0, "msg": msg})
+            if manual:
+                raise AdbError("ไม่มีมือถือที่ตรงกับรายการนี้เชื่อมต่ออยู่")
+            return 0
+        ok = 0
+        for i, serial in enumerate(targets):
+            try:
+                if s["action"] == "wake":
+                    self.input_key("KEYCODE_WAKEUP", serial)
+                elif s["action"] == "sleep":
+                    self.input_key("KEYCODE_SLEEP", serial)
+                elif s["action"] == "mirror":
+                    if not self._mirror_running(serial):
+                        self.mirror_start(serial, slot=len(self._running_mirrors()))
+                elif s["action"] == "mirror_off":
+                    self.mirror_stop(serial)
+                ok += 1
+            except AdbError as e:
+                self._log(f"ตั้งเวลา {s['time']}: {self._alias(serial)} ทำไม่สำเร็จ ({e})", "error")
+        msg = f"ตั้งเวลา {s['time']}: {label} {ok} เครื่องแล้ว"
+        self._log(msg, "ok" if ok else "error")
+        self._emit("schedule", {"id": s["id"], "ok": ok, "msg": msg})
+        return ok
+
+    def _schedule_loop(self):
+        fired = set()
+        while not self._closing:
+            now = datetime.datetime.now()
+            minute = now.strftime("%Y-%m-%d %H:%M")
+            hhmm = now.strftime("%H:%M")
+            for s in list(self._settings["schedules"]):
+                key = (s["id"], minute)
+                if s["enabled"] and s["time"] == hhmm and now.weekday() in s["days"] and key not in fired:
+                    fired.add(key)
+                    threading.Thread(target=self._run_schedule, args=(s,), daemon=True).start()
+            fired = {k for k in fired if k[1] == minute}
+            time.sleep(10)
 
     def pick_save_dir(self):
         import webview
@@ -504,7 +698,7 @@ class Api:
         i = data.find(b"\x89PNG")
         if i < 0:
             raise AdbError("แคปหน้าจอไม่ได้ (แอพบางตัว เช่น แอพธนาคาร ไม่อนุญาตให้แคป)")
-        tag = "" if not serial else "_" + re.sub(r"[^\w.-]", "_", self._devices.get(serial, {}).get("model") or serial)
+        tag = "" if not serial else "_" + re.sub(r"[^\w.-]", "_", self._alias(serial))
         path = os.path.join(self._out_dir("Screenshots"), f"screen_{self._stamp()}{tag}.png")
         with open(path, "wb") as f:
             f.write(data[i:])
@@ -584,7 +778,7 @@ class Api:
                     self.input_key(code, s)
                     ok += 1
                 except AdbError as e:
-                    self._log(f"{d['model'] or s}: {e}", "error")
+                    self._log(f"{self._alias(s)}: {e}", "error")
         return ok
 
     def screenshot_all(self):
@@ -594,7 +788,7 @@ class Api:
                 try:
                     paths.append(self.screenshot(s))
                 except AdbError as e:
-                    self._log(f"{d['model'] or s}: {e}", "error")
+                    self._log(f"{self._alias(s)}: {e}", "error")
         return {"count": len(paths), "dir": self._out_dir("Screenshots"), "last": paths[-1] if paths else ""}
 
     def input_text(self, text):
@@ -664,7 +858,7 @@ class Api:
             return True
         s = self._settings
         size, rate = QUALITY[s["quality"]]
-        name = self._devices.get(a.serial, {}).get("model") or "Android"
+        name = self._alias(a.serial)
         args = [self._scrcpy_path, "-s", a.serial, "--window-title", f"{name} - GiGoGi", "--video-bit-rate", rate]
         if size:
             args += ["--max-size", size]

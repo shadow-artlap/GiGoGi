@@ -15,6 +15,18 @@
   ];
   const briefs = { R5CW31ABCDE: ['Galaxy S23 Ultra', 82, true], '9A231FFAZ00K': ['Pixel 8', 64, false], '192.168.1.52:5555': ['Redmi Note 13', 23, false] };
   const mirrors = new Set();
+  const settings = {
+    quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false,
+    physical_input: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search),
+    start_with_windows: false, skip_version: '', save_dir: 'C:\\Users\\User\\Documents\\GiGoGi',
+    device_names: { '9A231FFAZ00K': 'มือถือหน้าร้าน', OLD123456: 'เครื่องสำรอง' },
+    schedules: [
+      { id: 'a1b2c3d4', time: '08:00', days: [0, 1, 2, 3, 4], action: 'wake', target: 'all', enabled: true },
+      { id: 'b2c3d4e5', time: '08:05', days: [0, 1, 2, 3, 4], action: 'mirror', target: '9A231FFAZ00K', enabled: true },
+      { id: 'c3d4e5f6', time: '22:30', days: [0, 1, 2, 3, 4, 5, 6], action: 'sleep', target: 'all', enabled: false },
+    ],
+  };
+  const withNames = list => list.map(d => ({ ...d, hw: d.serial.includes(':') ? 'RDMNOTE13X' : d.serial, alias: settings.device_names[d.serial.includes(':') ? 'RDMNOTE13X' : d.serial] || '' }));
 
   function frame(stops = ['#16324a', '#1d1b3a', '#3a1830']) {
     const c = document.createElement('canvas'); c.width = 540; c.height = 1170;
@@ -50,10 +62,10 @@
       const ready = mode === 'ready' || multi;
       return {
         version: '2.0.0', repo: 'shadow-artlap/GiGoGi', tools: { adb: true, scrcpy: true },
-        settings: { quality: 'balanced', stay_awake: true, screen_off: false, audio: true, on_top: false, show_touches: false, record_mirror: false, physical_input: false, auto_mirror: false, close_mirror_on_exit: true, check_updates: /update/.test(location.search), skip_version: '', save_dir: 'C:\\Users\\User\\Documents\\GiGoGi' },
+        settings,
         logs: [{ t: '14:30:02', msg: 'พบ SM S918B', level: 'ok' }, { t: '14:31:10', msg: 'บันทึกภาพหน้าจอแล้ว: screen_20261127_143110.png', level: 'ok' }],
         mirror: false, recording: { active: false, elapsed: 0 },
-        devices: mode === 'none' ? [] : [{ ...dev, state: ready || multi ? 'device' : 'unauthorized', model: ready || multi ? dev.model : '' }].concat(multi ? others : []),
+        devices: mode === 'none' ? [] : withNames([{ ...dev, state: ready || multi ? 'device' : 'unauthorized', model: ready || multi ? dev.model : '' }].concat(multi ? others : [])),
         mirrors: [],
         current: mode === 'none' ? null : dev.serial, state: mode === 'none' ? null : ready ? 'device' : 'unauthorized', ready,
       };
@@ -71,6 +83,22 @@
     async mirror_start_all() { [dev.serial, ...others.filter(o => o.state === 'device').map(o => o.serial)].forEach(s => mirrors.add(s)); GG.onEvent('mirror', { mirrors: [...mirrors] }); return 3; },
     async mirror_stop_all() { mirrors.clear(); GG.onEvent('mirror', { mirrors: [] }); },
     async broadcast_key() { await wait(200); return 3; },
+    async device_rename(serial, name) {
+      const all = [dev, ...others];
+      const d = all.find(x => x.serial === serial); const hw = withNames([d])[0].hw;
+      if (name) settings.device_names[hw] = name; else delete settings.device_names[hw];
+      const st = await demo.get_state();
+      return { ...st, settings };
+    },
+    async schedule_save(item) {
+      if (!/^\d\d:\d\d$/.test(item.time)) throw new Error('เวลาต้องเป็นแบบ 07:30');
+      if (!item.days.length) throw new Error('เลือกอย่างน้อย 1 วัน');
+      const it = { ...item, id: item.id || Math.random().toString(16).slice(2, 10) };
+      settings.schedules = settings.schedules.filter(s => s.id !== it.id).concat(it).sort((a, b) => a.time.localeCompare(b.time));
+      return settings.schedules;
+    },
+    async schedule_delete(id) { settings.schedules = settings.schedules.filter(s => s.id !== id); return settings.schedules; },
+    async schedule_run(id) { await wait(300); GG.onEvent('schedule', { id, ok: 2, msg: 'ตั้งเวลา: ทำแล้ว 2 เครื่อง' }); return 2; },
     async files_list(p) {
       await wait(150);
       const list = files[p] || [];

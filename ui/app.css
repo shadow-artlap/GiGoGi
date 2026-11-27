@@ -205,7 +205,7 @@ button { cursor: pointer; }
 .phone-empty { position: absolute; color: var(--ash-2); font-size: var(--t-s); text-align: center; padding: 0 20px; }
 .phone-screen img[src] + .phone-empty { display: none; }
 
-/* ------------------------------------------------ home: connect */
+/* ------------------------------------------------ connect guide */
 .connect { display: grid; grid-template-columns: minmax(260px, 380px) minmax(380px, 560px); gap: 56px; align-items: center; justify-content: center; min-height: 100%; padding: 20px 0 40px; }
 .connect-mark { width: 100%; max-width: 340px; justify-self: center; }
 .connect h2 { font: 600 var(--t-3xl)/1.12 var(--display); margin: 0 0 10px; }
@@ -227,23 +227,9 @@ button { cursor: pointer; }
 .more summary:hover { color: var(--bone); }
 .more ul { margin: 6px 0 14px; padding-left: 20px; color: var(--ash); font-size: var(--t-s); }
 
-/* ------------------------------------------------ home: stage */
-.stage { display: flex; gap: 64px; align-items: center; justify-content: center; min-height: 100%; padding: 12px 24px 32px 0; }
-.stage .phone { height: min(72vh, 620px); }
-.stage-body { flex: 0 1 560px; min-width: 340px; }
-.device-name { font: 600 var(--t-3xl)/1.08 var(--display); margin: 0 0 8px; letter-spacing: -.005em; }
-.device-sub { display: flex; gap: 18px; flex-wrap: wrap; margin: 0 0 30px; color: var(--ash); }
-.device-sub span { display: inline-flex; align-items: center; gap: 6px; }
-.meters { display: grid; gap: 16px; margin-bottom: 30px; }
-.meter { display: grid; grid-template-columns: 132px 1fr auto; align-items: center; gap: 16px; }
-.meter-label { color: var(--ash); font-size: var(--t-s); }
-.meter-val { font-size: var(--t-s); font-variant-numeric: tabular-nums; min-width: 160px; text-align: right; }
+/* ------------------------------------------------ progress bar & fact list (ใช้ในหน้าต่างอัปเดตและรายละเอียดแอพ) */
 .bar { height: 6px; border-radius: 6px; background: var(--basalt-3); overflow: hidden; }
 .bar i { display: block; height: 100%; width: 0; border-radius: 6px; background: #cfd5cc; transition: width .6s ease; }
-.meter.good .bar i { background: var(--grad); }
-.meter.warn .bar i { background: var(--amber); }
-.meter.low .bar i { background: var(--ember); }
-.stage-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 34px; }
 .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; margin: 0; border-top: 1px solid var(--seam); }
 .facts div { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--seam); }
 .facts dt { color: var(--ash); font-size: var(--t-s); }
@@ -349,7 +335,7 @@ body.ready .needs-device { display: none; }
 }
 .selbar > span { white-space: nowrap; }
 .selbar-actions { display: flex; gap: 6px; }
-body[data-page="home"].ready #mirror-btn, body[data-page="all"] #mirror-btn { visibility: hidden; }
+body[data-page="all"] #mirror-btn { visibility: hidden; }
 .btn.live { color: var(--lime); border-color: #3c6b26; }
 .statusline { color: var(--ash-2); font-size: var(--t-xs); padding-top: 10px; }
 
@@ -461,6 +447,37 @@ label.set-row { cursor: pointer; }
 .all-empty img { width: 76px; margin-bottom: 12px; }
 .all-empty h2 { font: 600 var(--t-xl)/1.2 var(--display); color: var(--bone); margin: 0 0 6px; }
 .all-empty p { margin: 0 0 18px; }
+
+.all-empty.connect { text-align: left; padding: 10px 0 30px; }
+
+/* ------------------------------------------------ schedule */
+.sched { max-width: 900px; }
+.sched-head { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 20px; }
+.sched-head .muted { max-width: 560px; }
+.sched-list { border-top: 1px solid var(--seam); margin-bottom: 28px; }
+.sched-row { display: grid; grid-template-columns: 118px 1fr auto; align-items: center; gap: 20px; padding: 16px 4px; border-bottom: 1px solid var(--seam); }
+.sched-time { font: 600 34px/1 var(--display); font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.sched-meta b { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+.sched-meta small { display: block; color: var(--ash); font-size: var(--t-s); margin-top: 3px; }
+.sched-meta .sep { display: inline-block; width: 4px; height: 4px; border-radius: 50%; background: var(--ash-2); margin: 0 9px 3px; vertical-align: middle; }
+.sched-actions { display: flex; align-items: center; gap: 6px; }
+.sched-actions .switch { margin-left: 10px; }
+.sched-row.off .sched-time, .sched-row.off .sched-meta { opacity: .45; }
+.sched-autostart { border-top: 1px solid var(--seam); }
+
+.form { display: grid; gap: 8px; margin: 14px 0 6px; }
+.f-label { color: var(--ash); font-size: var(--t-s); margin-top: 8px; }
+.input.time { font: 600 26px/1 var(--display); height: 52px; width: 160px; color-scheme: dark; }
+select.input { appearance: none; padding-right: 34px; cursor: pointer;
+  background: var(--void) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23949b93' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M7 9.5l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 10px center / 16px; }
+select.input option { background: var(--basalt-2); color: var(--bone); }
+.day-chips { display: flex; gap: 6px; }
+.day { width: 46px; height: 40px; border-radius: 10px; border: 1px solid var(--seam-2); background: none; color: var(--ash); font-weight: 500; }
+.day:hover { color: var(--bone); border-color: #4a524d; }
+.day.on { background: #173d1d; border-color: #2f9a35; color: var(--lime); }
+.day-quick { display: flex; gap: 6px; }
+.form .seg { justify-self: start; }
+.form-err { color: #ff9b85; font-size: var(--t-s); min-height: 1.2em; margin: 4px 0 0; }
 
 /* ------------------------------------------------ update */
 .rail-btn.has-update::after {

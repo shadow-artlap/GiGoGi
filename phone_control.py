@@ -102,15 +102,20 @@ def main():
     import webview
     from gigogi.api import Api
 
-    storage = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "GiGoGi", "webview")
-    _clear_web_cache_on_update(storage)
+    from gigogi.core import FROZEN
+    # รันจากซอร์สใช้โฟลเดอร์ WebView แยก จะได้ไม่ไปใช้แคช/โปรเซสร่วมกับโปรแกรมที่ติดตั้งไว้ซึ่งอาจเปิดอยู่
+    storage = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "GiGoGi",
+                           "webview" if FROZEN else "webview-dev")
+    stamp = _ui_stamp()
+    _clear_web_cache_on_update(storage, stamp)
 
     api = Api()
-    # ?v=<version> ทำให้ทุกเวอร์ชันเป็น URL ใหม่ WebView จึงโหลดหน้าสดไม่ใช้แคชเก่า
-    url = os.path.join(RES_DIR, "ui", "index.html") + "?v=" + __version__
+    # ?v=<เวอร์ชัน+เวลาไฟล์ UI> ทุกครั้งที่ไฟล์หน้าตาเปลี่ยน URL จะใหม่ WebView จึงโหลดหน้าสด ไม่ใช้แคชเก่า
+    url = os.path.join(RES_DIR, "ui", "index.html") + "?v=" + stamp
     window = webview.create_window(
         "GiGoGi", url=url, js_api=api,
-        width=1320, height=860, min_size=(1080, 700), background_color="#000000", text_select=True)
+        width=1320, height=860, min_size=(1080, 700), background_color="#000000", text_select=True,
+        minimized="--minimized" in sys.argv)  # เปิดพร้อม Windows: ย่อไว้ที่แถบงาน ให้ตั้งเวลาทำงานต่อ
     api._window = window
     window.events.loaded += api._on_loaded
     window.events.closing += api._on_closing
@@ -125,6 +130,9 @@ def main():
                     " title: document.querySelector('#page-title').textContent,"
                     " physical: !!document.querySelector('[data-set=\"physical_input\"]'),"
                     " ver: (typeof S !== 'undefined' && S.version) || '',"
+                    " page: (typeof S !== 'undefined' && S.page) || '',"
+                    " schedulePage: !!document.querySelector('#page-schedule'),"
+                    " errors: window.__ggErrors || [], href: location.href,"
                     " font: document.fonts.check('16px \"IBM Plex Sans Thai\"')})")
                 _print("smoke:", res)
                 with open(os.path.join(os.environ.get("TEMP", "."), "gigogi_smoke.txt"), "w", encoding="utf-8") as f:
@@ -133,11 +141,32 @@ def main():
                 window.destroy()
         threading.Thread(target=smoke, daemon=True).start()
 
-    webview.start(debug="--debug" in sys.argv, private_mode=False, storage_path=storage)
+    # ใช้พอร์ตว่างแบบสุ่มเสมอ: ค่าเริ่มต้นของ pywebview คือ 42001 ถ้าโปรแกรมอื่น (หรือ GiGoGi อีกตัว) ใช้อยู่
+    # หน้าต่างนี้จะไปโหลดหน้าเว็บของโปรแกรมนั้นแทน ทำให้เห็นหน้าตาเก่าหรือผิดโปรแกรม
+    webview.start(debug="--debug" in sys.argv, private_mode=False, storage_path=storage,
+                  http_server=True, http_port=_free_port())
 
 
-def _clear_web_cache_on_update(storage):
-    """ล้างแคชหน้าเว็บของ WebView เมื่ออัปเดตเป็นเวอร์ชันใหม่ ไม่งั้นหน้าตาเก่าจะยังค้างอยู่
+def _free_port():
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _ui_stamp():
+    """เวอร์ชัน + เวลาแก้ไขล่าสุดของไฟล์หน้าตา: เปลี่ยนทุกครั้งที่อัปเดตหรือ build ใหม่ แม้เลขเวอร์ชันเดิม"""
+    folder = os.path.join(RES_DIR, "ui")
+    try:
+        newest = max(os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)
+                     if f.endswith((".html", ".js", ".css")))
+    except (OSError, ValueError):
+        newest = 0
+    return f"{__version__}-{int(newest)}"
+
+
+def _clear_web_cache_on_update(storage, stamp):
+    """ล้างแคชหน้าเว็บของ WebView เมื่อไฟล์หน้าตาเปลี่ยน ไม่งั้นหน้าตาเก่าจะยังค้างอยู่
     ลบเฉพาะแคช (Cache / Code Cache) ไม่แตะ localStorage หรือการตั้งค่าผู้ใช้"""
     import shutil
     marker = os.path.join(os.path.dirname(storage), "ui-version.txt")
@@ -145,7 +174,7 @@ def _clear_web_cache_on_update(storage):
         last = open(marker, encoding="utf-8").read().strip()
     except OSError:
         last = ""
-    if last == __version__:
+    if last == stamp:
         return
     base = os.path.join(storage, "EBWebView", "Default")
     for sub in ("Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache"):
@@ -155,7 +184,7 @@ def _clear_web_cache_on_update(storage):
     try:
         os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, "w", encoding="utf-8") as f:
-            f.write(__version__)
+            f.write(stamp)
     except OSError:
         pass
 

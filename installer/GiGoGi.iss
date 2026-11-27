@@ -62,6 +62,10 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 ; อัปเดตจากในโปรแกรม (ติดตั้งแบบเงียบด้วย /RELAUNCH): เปิดโปรแกรมกลับมาให้เอง
 Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: IsRelaunch
 
+[Registry]
+; ตัวเลือก "เปิด GiGoGi พร้อม Windows" เขียนค่านี้ตอนใช้งาน ลบออกเมื่อถอนการติดตั้ง
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "GiGoGi"; Flags: uninsdeletevalue dontcreatekey
+
 [UninstallRun]
 Filename: "{app}\tools\scrcpy\adb.exe"; Parameters: "kill-server"; Flags: runhidden skipifdoesntexist; RunOnceId: "KillAdb"
 

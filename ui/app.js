@@ -1,6 +1,11 @@
 'use strict';
 /* GiGoGi UI — ทำงานคู่กับ gigogi/api.py ผ่าน window.pywebview.api */
 
+/* เก็บ error ของหน้าเว็บไว้ ให้ --smoke รายงานได้ (ช่วยหาบั๊กที่เกิดเฉพาะในหน้าต่างจริง) */
+window.__ggErrors = [];
+window.addEventListener('error', e => window.__ggErrors.push(String(e.message || e.error)));
+window.addEventListener('unhandledrejection', e => window.__ggErrors.push(String(e.reason?.message || e.reason)));
+
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -12,7 +17,7 @@ const store = {
 };
 
 const S = {
-  inited: false, page: 'home', ready: false, dstate: null, devices: [], current: null,
+  inited: false, page: 'all', ready: false, dstate: null, devices: [], current: null,
   tools: { adb: true, scrcpy: true }, settings: {}, version: '', repo: '', logs: [],
   mirrors: new Set(), briefs: {}, rec: { active: false, started: 0 }, info: null, infoAt: 0, frame: null,
   rate: store.get('rate', 1500),
@@ -109,12 +114,12 @@ function confirmBox({ title, body = '', items = null, ok = 'ยืนยัน',
     return m;
   }, danger ? '[data-r="0"]' : '[data-r="1"]').then(v => !!v);
 }
-function promptBox({ title, body = '', value = '', ok = 'บันทึก', placeholder = '' }) {
+function promptBox({ title, body = '', value = '', ok = 'บันทึก', placeholder = '', allowEmpty = false }) {
   return dialog(() => {
     const m = modal(`<h3>${esc(title)}</h3>${body ? `<p>${esc(body)}</p>` : ''}<input class="input" value="${esc(value)}" placeholder="${esc(placeholder)}" spellcheck="false">`
       + `<div class="modal-actions"><button class="btn ghost" data-r="0">ยกเลิก</button><button class="btn primary" data-r="1">${esc(ok)}</button></div>`);
     const inp = m.querySelector('input');
-    const submit = () => { const v = inp.value.trim(); if (v) m._done(v); };
+    const submit = () => { const v = inp.value.trim(); if (v || allowEmpty) m._done(v); };
     m.querySelector('[data-r="0"]').onclick = () => m._done(null);
     m.querySelector('[data-r="1"]').onclick = submit;
     inp.onkeydown = e => { if (e.key === 'Enter') submit(); };
@@ -124,7 +129,7 @@ function promptBox({ title, body = '', value = '', ok = 'บันทึก', pl
 }
 
 /* ================================================================ navigation */
-const TITLES = { home: 'หน้าหลัก', all: 'ทุกเครื่อง', screen: 'หน้าจอ', files: 'ไฟล์', apps: 'แอพ', tools: 'เครื่องมือ', settings: 'ตั้งค่า' };
+const TITLES = { all: 'ทุกเครื่อง', screen: 'หน้าจอ', files: 'ไฟล์', apps: 'แอพ', schedule: 'ตั้งเวลา', tools: 'เครื่องมือ', settings: 'ตั้งค่า' };
 function go(page) {
   S.page = page;
   document.body.dataset.page = page;
@@ -136,8 +141,8 @@ function go(page) {
 }
 function onPageShown() {
   loop.restart();
+  if (S.page === 'schedule') renderSchedules();
   if (!S.ready) return;
-  if (S.page === 'home' && (!S.info || Date.now() - S.infoAt > 15000)) loadInfo();
   if (S.page === 'files' && !S.files.loaded) listFiles(S.files.path);
   if (S.page === 'apps' && !S.apps.loaded) loadApps();
   if (S.page === 'screen') $('#viewer').focus({ preventScroll: true });
@@ -160,12 +165,10 @@ function applyDevices(d) {
   setMirrors([...S.mirrors]);
   const fresh = S.ready && (!was || prev !== S.current);
   if (fresh) {
-    S.info = null; S.frame = null;
+    S.frame = null;
     Object.assign(S.files, { path: '/sdcard', items: [], view: [], loaded: false, filter: '' }); S.files.sel.clear();
     Object.assign(S.apps, { list: [], loaded: false, sel: null });
-    $('#home-shot').removeAttribute('src'); $('#live').removeAttribute('src');
-    $('#dev-name').textContent = S.devices.find(x => x.serial === S.current)?.model || 'มือถือ';
-    $('#dev-sub').textContent = ''; $('#facts').innerHTML = '';
+    $('#live').removeAttribute('src');
     renderAppDetail(null);
     $$('.phone').forEach(p => p.classList.remove('lit'));
     requestAnimationFrame(() => requestAnimationFrame(() => $$('.phone').forEach(p => p.classList.add('lit'))));
@@ -175,9 +178,29 @@ function applyDevices(d) {
     $$('.phone').forEach(p => p.classList.remove('lit'));
     if (S.rec.active) setRec(false);
   }
-  $('#stage').hidden = !S.ready;
-  $('#connect').hidden = S.ready;
   if (fresh || (was && !S.ready) || S.page === 'all') onPageShown();
+}
+
+/* ================================================================ device names */
+/* ชื่อที่ผู้ใช้ตั้ง (ผูกกับ serial ตัวเครื่อง) > ชื่อในเครื่อง > รุ่น */
+function devName(d) {
+  if (!d) return 'มือถือ Android';
+  return d.alias || S.briefs[d.serial]?.name || d.model || 'มือถือ Android';
+}
+async function renameDevice(serial) {
+  const d = S.devices.find(x => x.serial === serial);
+  if (!d) return;
+  const name = await promptBox({
+    title: 'ตั้งชื่อมือถือ', body: `จำชื่อนี้ไว้กับเครื่อง ${d.hw || d.serial} ถอดแล้วเสียบใหม่ก็ยังใช้ชื่อเดิม เว้นว่างเพื่อใช้ชื่อเดิมของเครื่อง`,
+    value: d.alias || '', placeholder: S.briefs[serial]?.name || d.model || 'เช่น มือถือร้าน 1', ok: 'บันทึก', allowEmpty: true,
+  });
+  if (name === null) return;
+  try {
+    const st = await call('device_rename', serial, name);
+    S.settings = st.settings;
+    applyDevices(st);
+    toast(name ? `ตั้งชื่อ "${name}" แล้ว` : 'ใช้ชื่อเดิมของเครื่องแล้ว', 'ok');
+  } catch { /* แจ้งแล้ว */ }
 }
 
 /* ================================================================ all devices */
@@ -199,8 +222,7 @@ function renderTiles() {
   $('#mirror-all').innerHTML = `${icon(allOn ? 'stop' : 'play')}<span>${allOn ? 'ปิดจอสดทั้งหมด' : 'เปิดจอสดทุกเครื่อง'}</span>`;
   $('#mirror-all').classList.toggle('live', allOn);
   if (!S.devices.length) {
-    grid.innerHTML = `<div class="all-empty" style="grid-column:1/-1"><img src="logo.png" alt=""><h2>ยังไม่ได้เสียบมือถือ</h2>
-      <p>เสียบได้หลายเครื่องพร้อมกัน ทุกเครื่องจะขึ้นที่หน้านี้</p><button class="btn" data-menu="guide">ดูวิธีเชื่อมต่อ</button></div>`;
+    grid.innerHTML = `<div class="all-empty connect" style="grid-column:1/-1">${connectHTML()}</div>`;
     return;
   }
   grid.querySelector('.all-empty')?.remove();
@@ -215,6 +237,7 @@ function renderTiles() {
         <div class="tile-body"><h3></h3><p class="tile-sub"></p>
         <div class="tile-actions">
           <button class="btn" data-t="mirror"></button>
+          <button class="icon-btn sm" data-t="rename" title="ตั้งชื่อเครื่องนี้">${icon('edit', 'sm')}</button>
           <button class="icon-btn sm" data-t="shot" title="แคปหน้าจอเครื่องนี้">${icon('camera', 'sm')}</button>
           <button class="icon-btn sm" data-t="manage" title="จัดการเครื่องนี้">${icon('chev-right', 'sm')}</button>
         </div></div>`;
@@ -226,7 +249,7 @@ function renderTiles() {
     t.querySelector('.phone').classList.toggle('lit', ok);
     if (!ok) t.querySelector('img').removeAttribute('src');
     t.querySelector('.phone-empty').textContent = ok ? 'กำลังโหลดภาพหน้าจอ' : tileState(d);
-    t.querySelector('h3').textContent = b.name || d.model || 'มือถือ Android';
+    t.querySelector('h3').textContent = devName(d);
     const bat = b.battery != null ? `แบต ${b.battery}%${b.charging ? ' กำลังชาร์จ' : ''}` : '';
     t.querySelector('.tile-sub').innerHTML = `<span class="status-dot ${ok ? 'ok' : d.state === 'unauthorized' ? 'wait' : 'bad'}"></span>`
       + `<span>${d.transport === 'wifi' ? 'Wi‑Fi' : 'USB'}</span>${bat ? `<span>${esc(bat)}</span>` : ''}`
@@ -247,7 +270,7 @@ async function grabAll() {
     const b = S.briefs[d.serial];
     if (!b || Date.now() - b.at > 30000) {
       const nb = await quiet('device_brief', d.serial);
-      if (nb) { S.briefs[d.serial] = { ...nb, at: Date.now() }; renderTiles(); }
+      if (nb) { S.briefs[d.serial] = { ...nb, at: Date.now() }; renderTiles(); renderSwitch(); }
     }
     const f = await quiet('screen_frame', 720, d.serial);
     const t = $(`#device-grid .tile[data-serial="${CSS.escape(d.serial)}"]`);
@@ -259,8 +282,9 @@ function bindAll() {
     const b = e.target.closest('[data-t]'); if (!b) return;
     const serial = b.closest('.tile').dataset.serial;
     const d = S.devices.find(x => x.serial === serial);
-    const name = S.briefs[serial]?.name || d?.model || 'มือถือ';
+    const name = devName(d);
     try {
+      if (b.dataset.t === 'rename') { renameDevice(serial); return; }
       if (b.dataset.t === 'mirror') {
         if (S.mirrors.has(serial)) await call('mirror_stop', serial);
         else await call('mirror_start', serial, null);
@@ -270,7 +294,7 @@ function bindAll() {
       } else if (b.dataset.t === 'manage') {
         if (d?.state !== 'device') { toast(tileState(d), 'warn'); return; }
         if (serial !== S.current) applyDevices(await call('select_device', serial));
-        go('home');
+        go('screen');
       }
     } catch { /* แจ้งแล้ว */ }
   });
@@ -300,13 +324,13 @@ function renderSwitch() {
   const d = S.devices.find(x => x.serial === S.current);
   const dot = $('#status-dot');
   dot.className = 'status-dot ' + (!d ? '' : d.state === 'device' ? 'ok' : d.state === 'unauthorized' ? 'wait' : 'bad');
-  $('#ds-name').textContent = d ? (d.model || 'มือถือ Android') : 'ยังไม่ได้เชื่อมต่อ';
+  $('#ds-name').textContent = d ? devName(d) : 'ยังไม่ได้เชื่อมต่อ';
   $('#ds-sub').textContent = deviceSub(d) + (S.devices.length > 1 ? ` (มี ${S.devices.length} เครื่อง)` : '');
 }
 function renderDeviceMenu() {
   const menu = $('#device-menu');
   const rows = S.devices.map(d => `<button data-serial="${esc(d.serial)}">${icon(d.transport === 'wifi' ? 'wifi' : 'usb')}
-      <span><span>${esc(d.model || d.serial)}</span><small>${esc(deviceSub(d))}</small></span>
+      <span><span>${esc(devName(d))}</span><small>${esc(deviceSub(d))}</small></span>
       ${d.serial === S.current ? `<span class="check">${icon('check', 'sm')}</span>` : ''}</button>`).join('');
   menu.innerHTML = (rows || '<button disabled><span><span>ยังไม่พบมือถือ</span><small>เสียบสาย USB แล้วรอสักครู่</small></span></button>')
     + `<div class="menu-sep"></div>
@@ -346,7 +370,6 @@ function connectHTML() {
     </div>`;
 }
 function renderConnect() {
-  $('#connect').innerHTML = connectHTML();
   $$('.needs-device').forEach(el => {
     el.innerHTML = `<div class="nd"><img src="logo.png" alt=""><h2>ยังไม่ได้เชื่อมต่อมือถือ</h2>
       <p>${esc(S.dstate === 'unauthorized' ? 'กด "อนุญาต" บนหน้าจอมือถือ แล้วหน้านี้จะพร้อมใช้งาน' : 'เสียบมือถือด้วยสาย USB หรือเชื่อมต่อผ่าน Wi‑Fi แล้วหน้านี้จะพร้อมใช้งาน')}</p>
@@ -356,53 +379,6 @@ function renderConnect() {
 function showGuide() {
   const m = modal(`<div class="connect">${connectHTML()}</div><div class="modal-actions"><button class="btn primary" data-close>เข้าใจแล้ว</button></div>`, true);
   m.querySelector('[data-close]').onclick = closeModal;
-}
-
-/* ================================================================ home */
-async function loadInfo() {
-  if (!S.ready) return;
-  const serial = S.current;
-  const info = await quiet('device_info');
-  if (!info || serial !== S.current) return;
-  S.info = info; S.infoAt = Date.now();
-  renderInfo();
-}
-function setMeter(id, pct, text, level) {
-  const m = $(id);
-  m.className = 'meter ' + (level || '');
-  m.querySelector('.bar i').style.width = pct == null ? '0' : clamp(pct, 0, 100) + '%';
-  m.querySelector('.meter-val').textContent = text;
-}
-function renderInfo() {
-  const i = S.info;
-  const d = S.devices.find(x => x.serial === S.current) || {};
-  $('#dev-name').textContent = i.name || i.model || 'มือถือ Android';
-  const parts = [];
-  const brandModel = [i.brand, i.model].filter(Boolean).join(' ');
-  if (brandModel && brandModel !== i.name) parts.push(`<span>${esc(brandModel)}</span>`);
-  if (i.android) parts.push(`<span>Android ${esc(i.android)}</span>`);
-  parts.push(`<span>${icon(d.transport === 'wifi' ? 'wifi' : 'usb', 'sm')}${d.transport === 'wifi' ? 'Wi‑Fi' : 'USB'}</span>`);
-  $('#dev-sub').innerHTML = parts.join('');
-
-  const b = i.battery;
-  const btxt = b == null ? '—' : `${b}%${i.full ? ' เต็มแล้ว' : i.charging ? ' กำลังชาร์จ' : ''}`;
-  setMeter('#m-battery', b, btxt, b == null ? '' : i.charging || b >= 40 ? 'good' : b >= 20 ? 'warn' : 'low');
-  const sp = i.storage_total ? i.storage_used / i.storage_total * 100 : null;
-  setMeter('#m-storage', sp, i.storage_total ? `${fmtBytes(i.storage_used)} จาก ${fmtBytes(i.storage_total)}` : '—', sp > 92 ? 'low' : sp > 80 ? 'warn' : '');
-  const mu = i.mem_total ? i.mem_total - i.mem_avail : null;
-  setMeter('#m-memory', i.mem_total ? mu / i.mem_total * 100 : null, i.mem_total ? `${fmtBytes(mu)} จาก ${fmtBytes(i.mem_total)}` : '—', '');
-
-  const facts = [
-    ['ระบบ', i.android ? `Android ${i.android} (API ${i.sdk})` : '—'],
-    ['หน้าจอ', i.screen ? `${i.screen}${i.density ? ` (${i.density} dpi)` : ''}` : '—'],
-    ['อุณหภูมิแบต', i.temp != null ? `${i.temp.toFixed(1)} °C` : '—'],
-    ['แหล่งไฟ', i.power_source || 'ไม่ได้ชาร์จ'],
-    ['IP Wi‑Fi', i.ip || 'ไม่ได้ต่อ Wi‑Fi'],
-    ['เปิดเครื่องมาแล้ว', fmtUptime(i.uptime)],
-    ['Serial', i.serial],
-    ['ผู้ผลิต', i.brand || '—'],
-  ];
-  $('#facts').innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd title="${esc(v)}">${esc(v)}</dd></div>`).join('');
 }
 
 /* ================================================================ screen loop (มีลูปเดียวเสมอ) */
@@ -417,11 +393,7 @@ const loop = {
         await grabAll();
         next = 3000;
       } else if (S.ready && document.visibilityState === 'visible') {
-        if (S.page === 'home') {
-          await grab('#home-shot', '#home-phone');
-          next = 5000;
-          if (Date.now() - S.infoAt > 20000) loadInfo();
-        } else if (S.page === 'screen' && S.rate > 0) {
+        if (S.page === 'screen' && S.rate > 0) {
           await grab('#live', '#viewer');
           next = S.rate;
         }
@@ -987,6 +959,129 @@ function bindTools() {
   $('#open-save-dir').onclick = () => call('open_save_dir', '').catch(() => {});
 }
 
+/* ================================================================ schedule */
+const DAY_NAMES = ['จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส', 'อา'];
+const ACTION_NAMES = { wake: 'ปลุกจอ', mirror: 'เปิดจอสด', sleep: 'ปิดจอ', mirror_off: 'ปิดจอสด' };
+const ACTION_ICONS = { wake: 'power', mirror: 'play', sleep: 'power', mirror_off: 'stop' };
+function daysText(days) {
+  const s = [...days].sort((a, b) => a - b).join(',');
+  if (s === '0,1,2,3,4,5,6') return 'ทุกวัน';
+  if (s === '0,1,2,3,4') return 'จันทร์ถึงศุกร์';
+  if (s === '5,6') return 'เสาร์ อาทิตย์';
+  return days.map(d => DAY_NAMES[d]).join(' ');
+}
+/* เครื่องที่เลือกได้: เครื่องที่เคยตั้งชื่อไว้ และเครื่องที่เสียบอยู่ตอนนี้ */
+function knownTargets() {
+  const map = new Map();
+  for (const [hw, name] of Object.entries(S.settings.device_names || {})) map.set(hw, { hw, name, connected: false });
+  for (const d of S.devices) {
+    const hw = d.hw || d.serial;
+    map.set(hw, { hw, name: devName(d), connected: d.state === 'device' });
+  }
+  return [...map.values()];
+}
+function targetText(target) {
+  if (target === 'all') return 'ทุกเครื่องที่เชื่อมต่อ';
+  return knownTargets().find(x => x.hw === target)?.name || `เครื่อง ${target}`;
+}
+function renderSchedules() {
+  const list = S.settings.schedules || [];
+  const el = $('#sched-list');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty"><b>ยังไม่มีการตั้งเวลา</b>กด "เพิ่มเวลา" เพื่อให้มือถือปลุกจอหรือเปิดจอสดเองตามเวลาที่ตั้งไว้</div>';
+    return;
+  }
+  el.innerHTML = list.map(s => `<div class="sched-row ${s.enabled ? '' : 'off'}" data-id="${esc(s.id)}">
+      <span class="sched-time">${esc(s.time)}</span>
+      <div class="sched-meta"><b>${icon(ACTION_ICONS[s.action], 'sm')}${ACTION_NAMES[s.action]}</b>
+        <small>${esc(daysText(s.days))}<span class="sep"></span>${esc(targetText(s.target))}</small></div>
+      <div class="sched-actions">
+        <button class="btn ghost sm" data-s="run">ลองตอนนี้</button>
+        <button class="icon-btn sm" data-s="edit" title="แก้ไข">${icon('edit', 'sm')}</button>
+        <button class="icon-btn sm" data-s="del" title="ลบ">${icon('trash', 'sm')}</button>
+        <span class="switch" title="${s.enabled ? 'เปิดใช้อยู่' : 'ปิดไว้'}"><input type="checkbox" data-s="toggle" ${s.enabled ? 'checked' : ''} aria-label="เปิดใช้เวลานี้"><i></i></span>
+      </div></div>`).join('');
+}
+function editSchedule(item) {
+  const s = item ? { ...item, days: [...item.days] } : { time: '08:00', days: [0, 1, 2, 3, 4, 5, 6], action: 'wake', target: 'all', enabled: true };
+  const targets = knownTargets();
+  const unknown = s.target !== 'all' && !targets.some(x => x.hw === s.target);
+  return dialog(() => {
+    const m = modal(`<h3>${item ? 'แก้ไขเวลา' : 'เพิ่มเวลา'}</h3>
+      <div class="form">
+        <label class="f-label" for="sf-time">เวลา</label>
+        <input class="input time" type="time" id="sf-time" value="${esc(s.time)}">
+        <span class="f-label">วัน</span>
+        <div class="day-chips" id="sf-days">${DAY_NAMES.map((n, i) => `<button type="button" class="day ${s.days.includes(i) ? 'on' : ''}" data-d="${i}" aria-pressed="${s.days.includes(i)}">${n}</button>`).join('')}</div>
+        <div class="day-quick"><button type="button" class="chip" data-q="0,1,2,3,4,5,6">ทุกวัน</button><button type="button" class="chip" data-q="0,1,2,3,4">จันทร์ถึงศุกร์</button><button type="button" class="chip" data-q="5,6">เสาร์ อาทิตย์</button></div>
+        <span class="f-label">ให้ทำอะไร</span>
+        <div class="seg" id="sf-action">${Object.entries(ACTION_NAMES).map(([k, v]) => `<button type="button" data-a="${k}" class="${s.action === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+        <label class="f-label" for="sf-target">กับเครื่องไหน</label>
+        <select class="input" id="sf-target"><option value="all">ทุกเครื่องที่เชื่อมต่อ</option>
+          ${targets.map(x => `<option value="${esc(x.hw)}" ${s.target === x.hw ? 'selected' : ''}>${esc(x.name)}${x.connected ? '' : ' (ไม่ได้เชื่อมต่อตอนนี้)'}</option>`).join('')}
+          ${unknown ? `<option value="${esc(s.target)}" selected>เครื่อง ${esc(s.target)}</option>` : ''}</select>
+      </div>
+      <p class="form-err" id="sf-err"></p>
+      <div class="modal-actions"><button class="btn ghost" data-r="0">ยกเลิก</button><button class="btn primary" data-r="1">บันทึก</button></div>`);
+    const paintDays = () => $$('#sf-days .day', m).forEach(b => {
+      const on = s.days.includes(+b.dataset.d);
+      b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    });
+    m.querySelector('#sf-days').onclick = e => {
+      const b = e.target.closest('[data-d]'); if (!b) return;
+      const d = +b.dataset.d;
+      s.days = s.days.includes(d) ? s.days.filter(x => x !== d) : [...s.days, d];
+      paintDays();
+    };
+    m.querySelector('.day-quick').onclick = e => {
+      const b = e.target.closest('[data-q]'); if (!b) return;
+      s.days = b.dataset.q.split(',').map(Number); paintDays();
+    };
+    m.querySelector('#sf-action').onclick = e => {
+      const b = e.target.closest('[data-a]'); if (!b) return;
+      s.action = b.dataset.a;
+      $$('#sf-action button', m).forEach(x => x.classList.toggle('on', x === b));
+    };
+    m.querySelector('[data-r="0"]').onclick = () => m._done(null);
+    m.querySelector('[data-r="1"]').onclick = async () => {
+      s.time = m.querySelector('#sf-time').value;
+      s.target = m.querySelector('#sf-target').value;
+      try {
+        S.settings.schedules = await api.schedule_save(s);
+        m._done(true);
+        renderSchedules();
+        toast(`ตั้งเวลา ${s.time} ${ACTION_NAMES[s.action]} แล้ว`, 'ok');
+      } catch (e) { m.querySelector('#sf-err').textContent = errText(e); }
+    };
+    return m;
+  }, '#sf-time');
+}
+function bindSchedule() {
+  $('#sched-add').onclick = () => editSchedule(null);
+  const list = $('#sched-list');
+  list.addEventListener('click', async e => {
+    const b = e.target.closest('[data-s]'); if (!b || b.dataset.s === 'toggle') return;
+    const id = b.closest('.sched-row').dataset.id;
+    const s = (S.settings.schedules || []).find(x => x.id === id); if (!s) return;
+    try {
+      if (b.dataset.s === 'edit') editSchedule(s);
+      else if (b.dataset.s === 'run') { b.disabled = true; await call('schedule_run', id); }
+      else if (b.dataset.s === 'del') {
+        if (!await confirmBox({ title: `ลบเวลา ${s.time}`, body: `${ACTION_NAMES[s.action]} ${daysText(s.days)}`, ok: 'ลบ', danger: true })) return;
+        S.settings.schedules = await call('schedule_delete', id);
+        renderSchedules();
+      }
+    } catch { /* แจ้งแล้ว */ } finally { b.disabled = false; }
+  });
+  list.addEventListener('change', async e => {
+    const i = e.target.closest('[data-s="toggle"]'); if (!i) return;
+    const id = i.closest('.sched-row').dataset.id;
+    const s = (S.settings.schedules || []).find(x => x.id === id); if (!s) return;
+    try { S.settings.schedules = await call('schedule_save', { ...s, enabled: i.checked }); renderSchedules(); }
+    catch { i.checked = !i.checked; }
+  });
+}
+
 /* ================================================================ settings */
 function renderSettings() {
   const st = S.settings;
@@ -1151,6 +1246,7 @@ window.GG = {
       }
     } else if (ev === 'dropped') onDropped(data);
     else if (ev === 'update') setUpdateProgress(data);
+    else if (ev === 'schedule') toast(data.msg, data.ok ? 'ok' : 'warn', { ms: 8000 });
   },
 };
 
@@ -1208,7 +1304,7 @@ function bindShell() {
 async function init(apiObj) {
   if (S.inited) return;
   api = apiObj;
-  bindShell(); bindViewer(); bindFiles(); bindApps(); bindTools(); bindSettings(); bindDrop(); bindAll();
+  bindShell(); bindViewer(); bindFiles(); bindApps(); bindTools(); bindSettings(); bindDrop(); bindAll(); bindSchedule();
   const st = await api.get_state();
   S.tools = st.tools; S.settings = st.settings; S.version = st.version; S.repo = st.repo; S.logs = st.logs || [];
   renderSettings(); renderLog(); renderPlaces(); renderAppDetail(null);
@@ -1217,7 +1313,7 @@ async function init(apiObj) {
   setRate(S.rate);
   S.inited = true;
   applyDevices(st);
-  go('home');
+  go('all');
   pending.splice(0).forEach(([ev, data]) => window.GG.onEvent(ev, data));
   if (!st.tools.scrcpy) toast('ไม่พบ scrcpy ปุ่มจอสดจะใช้ไม่ได้ ติดตั้งโปรแกรมใหม่ด้วยตัวติดตั้ง', 'warn', { sticky: true });
   if (st.settings.check_updates) {
