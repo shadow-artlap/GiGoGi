@@ -139,8 +139,15 @@ function go(page) {
   closeMenus();
   onPageShown();
 }
+function updateViewerHint() {
+  const el = $('#viewer-hint');
+  if (el) el.textContent = S.settings.input_mode === 'remote'
+    ? 'โหมดใช้ผ่านรีโมต: คลิกที่ภาพนี้เพื่อแตะแบบสัมผัสจริง (ใช้ได้แม้ควบคุมผ่านรีโมต และกับหน้าที่แตะปกติไม่ได้) พิมพ์บนคีย์บอร์ดได้เลย'
+    : 'คลิกเพื่อแตะ ลากเพื่อปัด คลิกขวาเพื่อย้อนกลับ พิมพ์บนคีย์บอร์ดได้เลย';
+}
 function onPageShown() {
   loop.restart();
+  if (S.page === 'screen') updateViewerHint();
   if (S.page === 'schedule') renderSchedules();
   if (!S.ready) return;
   if (S.page === 'files' && !S.files.loaded) listFiles(S.files.path);
@@ -523,11 +530,10 @@ async function sendText(text, clear = true) {
 const INPUT_HINTS = {
   normal: 'เมาส์และคีย์บอร์ดแบบปกติ ใช้ได้เกือบทุกหน้า และใช้ผ่านโปรแกรมรีโมตได้',
   physical: 'สำหรับหน้าที่แตะไม่ได้ เช่น หน้าสมัคร WhatsApp เมาส์จะถูกจับไว้ในหน้าต่างจอสด กด Alt หรือปุ่ม Windows เพื่อปล่อยเมาส์กลับมาที่คอม ใช้ผ่านโปรแกรมรีโมตไม่ได้ Android 11 ขึ้นไป',
-  remote: 'ใช้เมื่อควบคุมคอมผ่าน UltraViewer, TeamViewer หรือ AnyDesk เมาส์ใช้ได้ปกติ ในหน้าที่แตะไม่ได้ให้ใช้คีย์บอร์ด: Tab ย้ายช่อง พิมพ์ข้อความ Enter เพื่อกด Android 11 ขึ้นไป',
+  remote: 'ใช้เมื่อควบคุมคอมผ่าน UltraViewer, TeamViewer หรือ AnyDesk ไปที่หน้า "หน้าจอ" แล้วคลิกที่ภาพมือถือเพื่อแตะแบบสัมผัสจริง ใช้ได้กับหน้าที่แตะไม่ได้ เช่น หน้าสมัคร WhatsApp และพิมพ์ด้วยคีย์บอร์ดของคอมได้เลย · Android 11 ขึ้นไป',
 };
 const INPUT_TOASTS = {
   physical: 'โหมดอุปกรณ์จริง: เมาส์ถูกจับไว้ควบคุมมือถือ กด Alt หรือปุ่ม Windows เพื่อปล่อยเมาส์กลับมาที่คอม',
-  remote: 'โหมดใช้ผ่านรีโมต: หน้าไหนคลิกไม่ได้ ให้กด Tab ย้ายไปช่องที่ต้องการ พิมพ์ แล้วกด Enter',
 };
 let inputHintShown = false;
 function setMirrors(list) {
@@ -1112,8 +1118,9 @@ function bindSettings() {
   });
   $('#input-seg').addEventListener('click', async e => {
     const b = e.target.closest('[data-im]'); if (!b || b.dataset.im === S.settings.input_mode) return;
-    try { S.settings = await call('settings_set', 'input_mode', b.dataset.im); renderSettings(); } catch { return; }
+    try { S.settings = await call('settings_set', 'input_mode', b.dataset.im); renderSettings(); updateViewerHint(); } catch { return; }
     inputHintShown = false;
+    if (b.dataset.im === 'remote') toast('ไปที่หน้า "หน้าจอ" แล้วคลิกที่ภาพมือถือเพื่อแตะแบบสัมผัสจริง ใช้ได้แม้ควบคุมผ่านรีโมต', 'ok', { ms: 10000 });
     if (S.mirrors.size) toast('จะใช้วิธีใหม่ตอนเปิดจอสดครั้งถัดไป ปิดแล้วเปิดจอสดใหม่ได้เลย', 'info');
   });
   $('#quality-seg').addEventListener('click', async e => {

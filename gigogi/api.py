@@ -186,6 +186,8 @@ class Api:
         self._update_asset = None
         self._hw = {}                 # serial ของ adb -> serial ของตัวเครื่อง (Wi‑Fi ใช้ ip:port จึงต้องแปลง)
         self._scheduling = False
+        self._touch = {}              # serial -> HidTouch (จอสัมผัสเสมือน ใช้ในโหมด "ใช้ผ่านรีโมต")
+        self._size = {}               # serial -> (w, h) ของจอ
 
     # ================================================================ plumbing
     def _emit(self, event, data=None):
@@ -273,6 +275,8 @@ class Api:
                 self._adb.shell("pkill -INT screenrecord", timeout=5)
             except AdbError:
                 pass
+        for t in list(self._touch.values()):
+            t.close()
         if self._settings["close_mirror_on_exit"]:
             self.mirror_stop_all()
 
@@ -334,6 +338,10 @@ class Api:
                 if s not in new:
                     self._log(f"ถอด {self._alias(s) if s in self._hw else (old[s]['model'] or s)} แล้ว", "warn")
                     self._hw.pop(s, None)
+                    self._size.pop(s, None)
+                    t = self._touch.pop(s, None)
+                    if t:
+                        threading.Thread(target=t.close, daemon=True).start()
             prev = self._adb.serial
             cur = prev
             ready = [s for s, d in new.items() if d["state"] == "device"]
@@ -404,6 +412,10 @@ class Api:
             raise AdbError("ค่าคุณภาพไม่ถูกต้อง")
         if key == "input_mode" and value not in INPUT_MODES:
             raise AdbError("วิธีส่งการควบคุมไม่ถูกต้อง")
+        if key == "input_mode" and value != "remote":  # เลิกใช้จอสัมผัสเสมือนเมื่อออกจากโหมดรีโมต
+            for t in list(self._touch.values()):
+                threading.Thread(target=t.close, daemon=True).start()
+            self._touch.clear()
         if key == "start_with_windows":
             self._set_autostart(value)
         self._settings[key] = value
@@ -770,12 +782,43 @@ class Api:
         return path
 
     # ================================================================ input
+    def _screen_size(self, serial):
+        if serial not in self._size:
+            try:
+                self._size[serial] = parse_wm_size(self._need(serial).sh_out("wm size")) or (1080, 2340)
+            except AdbError:
+                return (1080, 2340)
+        return self._size[serial]
+
+    def _toucher(self, serial):
+        """จอสัมผัสเสมือนของเครื่องนี้ (สร้างครั้งแรกเมื่อใช้)"""
+        from .hidtouch import HidTouch
+        if not self._scrcpy_path:
+            raise AdbError("ไม่พบ scrcpy สำหรับการแตะแบบสัมผัสจริง")
+        t = self._touch.get(serial)
+        if t is None:
+            t = HidTouch(self._adb_path, self._scrcpy_path, serial)
+            self._touch[serial] = t
+        return t
+
+    def _real_touch(self):
+        """โหมด "ใช้ผ่านรีโมต" ให้การคลิกภาพในแอพเป็นการสัมผัสจริง (คลิกผ่านรีโมตได้ และแอพที่กันการแตะจำลองก็รับ)"""
+        return self._settings["input_mode"] == "remote"
+
     def input_tap(self, x, y):
-        self._need().shell(f"input tap {int(x)} {int(y)}", check=True)
+        a = self._need()
+        if self._real_touch():
+            self._toucher(a.serial).tap(x, y, self._screen_size(a.serial))
+        else:
+            a.shell(f"input tap {int(x)} {int(y)}", check=True)
 
     def input_swipe(self, x1, y1, x2, y2, ms=250):
         ms = max(50, min(int(ms), 3000))
-        self._need().shell(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {ms}", check=True)
+        a = self._need()
+        if self._real_touch():
+            self._toucher(a.serial).swipe(x1, y1, x2, y2, ms, self._screen_size(a.serial))
+        else:
+            a.shell(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {ms}", check=True)
 
     def input_key(self, code, serial=None):
         code = str(code)

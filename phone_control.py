@@ -51,8 +51,12 @@ def selftest():
     assert devs["R58M"]["model"] == "SM G973F" and devs["ZX"]["state"] == "unauthorized"
     assert devs["192.168.1.5:5555"]["transport"] == "wifi" and devs["R58M"]["transport"] == "usb"
     assert "Xiaomi" in friendly_error("java.lang.SecurityException: Injecting to another application requires INJECT_EVENTS permission")
-    from gigogi.api import _to_bytes
+    from gigogi.api import _to_bytes, INPUT_MODES, _load_settings
     assert _to_bytes("1024") == 1024 * 1024 and _to_bytes("2G") == 2 * 1024 ** 3
+    assert set(INPUT_MODES) == {"normal", "physical", "remote"}
+    from gigogi.hidtouch import REPORT_DESC, _report
+    assert len(REPORT_DESC) == 69 and len(_report(True, 1, 2)) == 7
+    assert _report(True, 100, 200) == bytes.fromhex("01006400c80001")
     for f in ("index.html", "icon.ico", "scrcpy-icons/scrcpy.png", "scrcpy-icons/disconnected.png"):
         assert os.path.isfile(os.path.join(RES_DIR, "ui", f)), f"ui/{f} missing"
     _print("selftest: OK")
